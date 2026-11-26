@@ -61,8 +61,13 @@ const createOutbox = ({
   const drain = () => {
     if (activeDrain) return activeDrain;
     const current = (async () => {
+      const priority = { form: 0, permission: 0, page: 0, event: 1, failure: 1, finish: 2, test: 3 };
+      const due = store.dueOutbox(clock()).sort((left, right) => (
+        (priority[left.kind] ?? 1) - (priority[right.kind] ?? 1)
+        || (left.createdAt ?? 0) - (right.createdAt ?? 0)
+      ));
       try {
-        for (const item of store.dueOutbox(clock())) {
+        for (const item of due) {
           if (!isChatAllowed(item.chatId)) {
             store.removeOutbox(item.id);
             finish(item, 'failed', 'chat was removed from the allowlist');

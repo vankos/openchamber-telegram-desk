@@ -13,7 +13,7 @@ const { createOutbox } = require('./lib/outbox');
 const { createSessionEvents, validateSessionEvent } = require('./lib/session-events');
 const { createAnswerEngine } = require('./lib/answers');
 const { createCommands } = require('./lib/commands');
-const { normalizeSettings, maskToken } = require('./lib/settings');
+const { normalizeSettings } = require('./lib/settings');
 const { effectiveIds, choosePrimaryChat } = require('./lib/allowlist');
 const { parseCallback } = require('./lib/callback-data');
 const { timingSafeEqual, randomPairCode, formatPairCode } = require('./lib/ids');
@@ -210,7 +210,7 @@ const createDeskService = ({
         { command: 'help', description: 'Commands and reply routing' },
       ]).catch((error) => log.debug('Could not set bot commands', { code: error?.code }));
       lastError = null;
-      log.info('Telegram bot connected', { username: botInfo.username, token: maskToken(settings.botToken) });
+      log.info('Telegram bot connected', { username: botInfo.username });
     } catch (error) {
       lastError = safeError(error);
       log.warn('Telegram getMe failed', { code: error?.code, status: error?.status });
@@ -460,9 +460,12 @@ const createDeskService = ({
     if (!message?.chat || !message.from || message.from.is_bot) return;
     if (typeof message.text !== 'string' || !message.text.trim()) return;
     const repliedFrom = message.reply_to_message?.from;
-    const replyTo = repliedFrom?.is_bot && (!botInfo?.username || repliedFrom.username === botInfo.username)
-      ? message.reply_to_message.message_id
-      : null;
+    const isOurBot = Boolean(repliedFrom?.is_bot) && (
+      !botInfo
+      || repliedFrom.id === botInfo.id
+      || (botInfo.username && String(repliedFrom.username).toLowerCase() === botInfo.username.toLowerCase())
+    );
+    const replyTo = isOurBot ? message.reply_to_message.message_id : null;
     const result = await commands.handleMessage({
       chatId: message.chat.id,
       userId: message.from.id,
@@ -600,7 +603,7 @@ const createDeskService = ({
   const handleTelegramUpdate = async (update) => {
     if (!update || !Number.isFinite(update.update_id)) return;
     if (store.hasSeenUpdate(update.update_id)) {
-      store.setOffset(update.update_id + 1);
+      if (update.update_id + 1 > store.state.offset) store.setOffset(update.update_id + 1);
       return;
     }
     await processUpdate(update);

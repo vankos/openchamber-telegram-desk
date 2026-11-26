@@ -187,8 +187,23 @@ test('smoke: health auth, question card, button answer, mapping and restart', as
     const stateOnDisk = await fs.readFile(path.join(dir, 'state.json'), 'utf8');
     assert.ok(!stateOnDisk.includes(TOKEN), 'state.json must never contain the bot token');
 
-    // Idempotent callback: a repeated update must not answer the form twice.
+    // Idempotent callback: the same callback_query id, carried by a new update,
+    // must not answer the form twice.
     const before = h.hostCalls.filter((call) => call[0] === 'answerForm').length;
+    await h.service.handleTelegramUpdate({
+      update_id: 3,
+      callback_query: {
+        id: 'cb-1',
+        from: { id: 100, is_bot: false },
+        data: callback,
+        message: { message_id: 501, chat: { id: 100, type: 'private' } },
+      },
+    });
+    assert.equal(h.hostCalls.filter((call) => call[0] === 'answerForm').length, before);
+    assert.ok(h.callbackAnswers.some((item) => item.callbackQueryId === 'cb-1' && item.text === 'Already handled'));
+    assert.equal(h.service.store.state.offset, 4);
+
+    // A stale duplicate update must not move the offset backwards.
     await h.service.handleTelegramUpdate({
       update_id: 1,
       callback_query: {
@@ -198,19 +213,50 @@ test('smoke: health auth, question card, button answer, mapping and restart', as
         message: { message_id: 501, chat: { id: 100, type: 'private' } },
       },
     });
-    assert.equal(h.hostCalls.filter((call) => call[0] === 'answerForm').length, before);
+    assert.equal(h.service.store.state.offset, 4);
     assert.ok(h.logs.join('').includes('Telegram Desk service listening'));
     assert.ok(!h.logs.join('').includes(TOKEN), 'logs must never contain the bot token');
+
+    // Leave one question open across a restart to prove the ref/form state survives.
+    const second = questionEvent();
+    second.requestId = 'req_q2';
+    second.event.id = 'evt_q2';
+    second.event.session.id = 'ses_2';
+    second.event.question.id = 'frm_2';
+    second.content.sessionTitle = 'Second session';
+    second.content.ask.id = 'frm_2';
+    second.content.ask.title = 'Second question';
+    second.content.ask.fields[0].key = 'branch2';
+    const secondResponse = await api(h.port, 'POST', '/session-events', second);
+    assert.equal(secondResponse.status, 200);
+    await settle();
+    await h.service.outbox.drain();
+    assert.equal(h.sent.length, 2);
+    const secondCallback = h.sent[1].keyboard[0][0].callback_data;
 
     await h.service.stop();
 
     // Restart against the same data directory.
     const again = await createHarness(dir);
     try {
-      assert.equal(again.service.store.state.offset, 2);
+      assert.equal(again.service.store.state.offset, 4);
       assert.equal(again.service.store.messageRoute(100, 501).sessionId, 'ses_1');
       const statusAfter = await api(again.port, 'GET', '/status');
       assert.equal(statusAfter.body.allowlist.primaryChatId, 100);
+
+      // The form opened before the restart still answers through the persisted ref.
+      await again.service.handleTelegramUpdate({
+        update_id: 50,
+        callback_query: {
+          id: 'cb-restart',
+          from: { id: 100, is_bot: false },
+          data: secondCallback,
+          message: { message_id: 502, chat: { id: 100, type: 'private' } },
+        },
+      });
+      const restartedAnswer = again.hostCalls.find((call) => call[0] === 'answerForm');
+      assert.deepEqual(restartedAnswer, ['answerForm', 'ses_2', 'frm_2', { branch2: 'main' }, undefined]);
+      assert.equal(again.service.store.state.offset, 51);
     } finally {
       await again.service.stop();
     }

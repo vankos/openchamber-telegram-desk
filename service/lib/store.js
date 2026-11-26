@@ -187,7 +187,9 @@ class Store {
   }
 
   setOffset(value) {
-    this.state.offset = Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : this.state.offset;
+    if (!Number.isFinite(value)) return;
+    const next = Math.max(0, Math.trunc(value));
+    this.state.offset = Math.max(this.state.offset, next);
     this.touch();
   }
 
