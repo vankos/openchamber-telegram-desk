@@ -182,7 +182,7 @@ const formatTurnFinished = ({ sessionTitle: title, reply, replyTruncated }) => {
   const footer = '<i>Reply to this message to continue the session.</i>';
   const note = replyTruncated ? '<i>The reply was truncated by OpenChamber.</i>' : '';
   const tail = [note, footer].filter(Boolean).join('\n');
-  const body = String(reply ?? '').trim();
+  const body = stripControls(String(reply ?? '')).replace(/\r\n?/g, '\n').trim();
   const build = () => {
     if (!body) return null;
     // Every part keeps room for the heading and the tail, so a part can be first or last.
