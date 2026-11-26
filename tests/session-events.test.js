@@ -218,7 +218,7 @@ test('turn-finished splits a reply too large for one rich message', async () => 
   assert.equal(h.store.state.stats.sent, 1);
 });
 
-
+test('turn-finished is suppressed in off mode and for subagents', async () => {
   const off = await makeHarness({ notifySetting: 'off' });
   off.store.watchSession('ses_1');
   const request = baseEvent('turn-finished');
