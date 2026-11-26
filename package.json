@@ -1,0 +1,79 @@
+{
+  "name": "openchamber-telegram-desk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Two-way Telegram bridge for OpenChamber sessions: questions, permissions, commands and reply routing.",
+  "license": "MIT",
+  "openchamber": {
+    "apiVersion": 1,
+    "engines": {
+      "openchamber": ">=2.7.0"
+    },
+    "id": "telegram-desk",
+    "name": "Telegram Desk",
+    "icon": "icon.svg",
+    "contributes": {
+      "panel": {
+        "entry": "panel/index.html"
+      },
+      "service": {
+        "entry": "service/main.js",
+        "runtime": "host",
+        "keepRunning": true,
+        "provides": [
+          "opencode"
+        ]
+      },
+      "sessionControl": {
+        "content": true,
+        "answers": true
+      },
+      "sessionEvents": {
+        "events": [
+          "question-asked",
+          "permission-asked",
+          "turn-finished",
+          "turn-failed",
+          "turn-started",
+          "session-created"
+        ],
+        "content": true
+      },
+      "integration": {
+        "name": "Telegram Desk",
+        "description": "Telegram bot token and allowlist. Paste the token into the Bot token setting; the API token and Connect controls are not used. The token is never shown to the panel.",
+        "token": {
+          "apiOrigin": "https://api.telegram.org",
+          "scheme": "raw"
+        },
+        "settings": [
+          {
+            "id": "bot-token",
+            "label": "Bot token used by the service (paste here, not in the API token field)",
+            "secret": true
+          },
+          {
+            "id": "allowlist",
+            "label": "Allowed Telegram user/chat IDs (comma-separated)"
+          },
+          {
+            "id": "notify",
+            "label": "Turn notifications: all, active, or off (default all)"
+          }
+        ]
+      }
+    }
+  },
+  "scripts": {
+    "build": "npm run build:panel",
+    "build:panel": "esbuild panel/src/main.mjs --bundle --format=iife --platform=browser --target=es2020 --outfile=panel/main.js",
+    "test": "node --test",
+    "test:smoke": "node --test tests/smoke.test.js",
+    "check": "node scripts/check-package.mjs",
+    "smoke:telegram": "node scripts/smoke-telegram.mjs"
+  },
+  "devDependencies": {
+    "@openchamber/sdk": "2.8.0",
+    "esbuild": "^0.25.0"
+  }
+}

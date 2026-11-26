@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Telegram Desk</title>
+    <link rel="stylesheet" href="./style.css">
+  </head>
+  <body>
+    <main id="app">
+      <header class="head">
+        <div class="brand">
+          <span class="brand-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none">
+              <path d="M4.2 11.3 19.4 5.1c.8-.3 1.5.4 1.2 1.2l-6.2 15.2c-.3.8-1.5.8-1.8 0l-2.1-5.1a1 1 0 0 0-.5-.5l-5.1-2.1c-.8-.3-.8-1.5 0-1.8Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+              <path d="m10.4 15.4 8-8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+          </span>
+          <div class="brand-text">
+            <h1>Telegram Desk</h1>
+            <p id="subtitle">Connecting to the local service…</p>
+          </div>
+        </div>
+        <span id="service-pill" class="pill neutral">starting</span>
+      </header>
+
+      <section id="setup-card" class="card callout hidden" aria-live="polite">
+        <h2 id="setup-title">Finish setup</h2>
+        <p id="setup-body"></p>
+        <p class="muted small">The bot token is stored by OpenChamber as a secret setting. This panel never receives it.</p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Connection</h2>
+          <button id="test-button" class="btn" type="button">Send test message</button>
+        </div>
+        <dl class="facts">
+          <div><dt>Service</dt><dd id="fact-service">—</dd></div>
+          <div><dt>Bot</dt><dd id="fact-bot">—</dd></div>
+          <div><dt>Last poll</dt><dd id="fact-poll">—</dd></div>
+          <div><dt>OpenCode access</dt><dd id="fact-opencode">—</dd></div>
+          <div><dt>Pending answers</dt><dd id="fact-pending">—</dd></div>
+          <div><dt>Outbox</dt><dd id="fact-outbox">—</dd></div>
+        </dl>
+        <p id="test-result" class="result hidden" aria-live="polite"></p>
+        <p id="last-error" class="result error hidden"></p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Pairing</h2>
+          <button id="pair-button" class="btn" type="button">Create pairing code</button>
+        </div>
+        <div id="pair-code-box" class="pair-box hidden">
+          <div class="pair-code-row">
+            <code id="pair-code">—</code>
+            <span id="pair-expiry" class="muted small"></span>
+          </div>
+          <p class="small">Send <code>/start <span id="pair-code-inline">CODE</span></code> to the bot in a private chat. The code works once and expires in 10 minutes.</p>
+        </div>
+        <div class="allowlist-head">
+          <h3>Allowed chats</h3>
+          <span id="allowlist-count" class="muted small">0</span>
+        </div>
+        <ul id="allowlist" class="chips"></ul>
+        <p id="primary-chat" class="muted small"></p>
+        <p id="pair-result" class="result hidden" aria-live="polite"></p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Turn notifications</h2>
+        </div>
+        <label class="field">
+          <span>Mode</span>
+          <select id="notify-mode" class="input">
+            <option value="all">All sessions</option>
+            <option value="active">Only active sessions</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+        <p class="muted small" id="notify-hint">Active means a session asked a question, requested permission, or was messaged from Telegram in the last 24 hours.</p>
+        <p id="notify-result" class="result hidden" aria-live="polite"></p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Recent events</h2>
+          <span id="event-count" class="muted small"></span>
+        </div>
+        <ul id="events" class="events">
+          <li class="muted">No events yet.</li>
+        </ul>
+      </section>
+
+      <footer class="foot">
+        <span id="version">Telegram Desk</span>
+        <span>Token stays in OpenChamber. The service listens on 127.0.0.1 only.</span>
+      </footer>
+    </main>
+    <script src="./main.js"></script>
+  </body>
+</html>
