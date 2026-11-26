@@ -167,7 +167,8 @@ to delete its data folder.
   no webhook set; a webhook makes `getUpdates` fail with a 409.
 - **Group chats.** Allowing a group lets every member press its cards; the bot pairs only
   private chats. Prefer private chats for questions and permissions.
-- **No attachments, voice, reactions or rich messages in v1.** Text cards only.
+- **No attachments, voice or reactions yet.** Rich text is supported; local images and files
+  are not uploaded.
 - **Bot messages are English in v1.**
 - **The integration “API token” field is unused** because the SDK does not expose the
   integration token to services. Use the secret **Bot token** setting.
