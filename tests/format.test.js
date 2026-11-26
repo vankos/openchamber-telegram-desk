@@ -69,6 +69,9 @@ test('formatTurnFinished sends the whole reply in parts under the limit', () => 
   const plain = card.parts.map((part) => part.plain).join('\n');
   assert.ok(plain.includes('line 0 '));
   assert.ok(plain.includes('line 599 '));
+  assert.ok(card.rich);
+  assert.match(card.rich.markdown, /line 599 /);
+  assert.match(card.rich.markdown, /finished/);
 });
 
 test('formatTurnFinished escapes each part and marks a truncated reply', () => {
@@ -91,6 +94,18 @@ test('formatTurnFinished escapes each part and marks a truncated reply', () => {
   const empty = formatTurnFinished({ sessionTitle: 'Fix', reply: '', replyTruncated: false });
   assert.equal(empty.parts.length, 1);
   assert.match(empty.parts[0].text, /finished/);
+  assert.equal(empty.rich, undefined);
+});
+
+test('formatTurnFinished keeps rich text inside the Bot API cap', () => {
+  const huge = formatTurnFinished({ sessionTitle: 'Huge', reply: 'z'.repeat(40000), replyTruncated: false });
+  assert.equal(huge.rich, undefined);
+  assert.ok(huge.parts.length > 1);
+
+  const title = formatTurnFinished({ sessionTitle: 'Fix *the* [parser]', reply: 'done', replyTruncated: false });
+  assert.ok(title.rich);
+  assert.match(title.rich.markdown, /Fix \\\*the\\\* \\\[parser\\\]/);
+  assert.ok(title.rich.markdown.length <= 32000);
 });
 
 test('formatTurnFailed includes the error type', () => {

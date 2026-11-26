@@ -20,7 +20,7 @@ here patches OpenChamber or OpenCode.
 | `contributes.sessionEvents` | `question-asked`, `permission-asked`, `turn-finished`, `turn-failed`, `turn-started`, `session-created`; `content: true` adds the transcript fields | Every card and notification |
 | `question-asked` content | `ask.kind` (`form` or `page`), form `id`, `title`, `fields[]` with `key/type/title/description/required/options/custom/when` | Form cards and answers |
 | `permission-asked` content | `action`, `resources[]`, `message` | Allow/Deny cards |
-| `turn-finished` / `turn-failed` content | `sessionTitle`, `reply` (64k cap), `replyTruncated`, or `error { type, message }` | Short notifications |
+| `turn-finished` / `turn-failed` content | `sessionTitle`, `reply` (64k cap), `replyTruncated`, or `error { type, message }` | Full turn notices (rich message or parts), error cards |
 | `contributes.sessionControl` | `sessions.send`, `stop`, `status`, `lastReply`, `retry`, `answerForm`, `answerPermission` | Commands and callbacks |
 | `contributes.sessionControl.answers` | `answerForm` / `answerPermission` with the user's authority | Button callbacks |
 | `contributes.service.provides: ["opencode"]` | Loopback `/api/session` (and other listed reads) with the service bearer | `/status`, `/sessions`, `/digest` |
@@ -236,10 +236,13 @@ accepted a send but before the outbox item was removed; the message may repeat.
 - **Token isolation.** The bot token lives only in the integration secret setting and
   service memory. It is never written to state, never returned by `/status`, never logged.
   The logger redacts `123456:AA…` patterns and `Bearer` values.
-- **HTML.** All agent/user text is HTML-escaped before `parse_mode: "HTML"`. No Markdown
-  from the agent is interpreted. A Telegram parse error triggers one plain-text fallback.
-- **Length.** Every message is capped under Telegram's 4096 limit; option labels, session
-  titles, error messages and reply excerpts have their own caps.
+- **HTML and rich text.** Text in ordinary messages is HTML-escaped before
+  `parse_mode: "HTML"`; a Telegram parse error triggers one plain-text fallback. A finished
+  turn's reply goes as a Telegram rich message (`sendRichMessage`, Markdown) when it fits;
+  a refusal falls back to escaped HTML parts.
+- **Length.** Ordinary messages are capped under Telegram's 4096 limit; a reply that does not
+  fit a rich message (32,768 characters) is split into parts at line boundaries. Option
+  labels, session titles and error messages have their own caps.
 - **Idempotency.** `callback_query.id` is recorded before its effect is acknowledged.
   Update IDs and event IDs are deduplicated. Refs are single-use where the action is
   terminal (permission answer, submit, dismiss).
@@ -273,11 +276,16 @@ Notification modes:
 A session finish is additionally suppressed for 20 s per session and 10 per minute
 globally. The event is still recorded in `/digest`.
 
+A finished turn is one Telegram rich message with the agent's Markdown when the reply fits
+the 32k rich-message cap; otherwise, or when Telegram refuses the rich message, the same
+reply goes as HTML parts under 3,900 characters each. Every part is mapped back to the
+session, so a reply to any part continues it; the last part carries the reply hint.
+
 ## 7. Test plan
 
 - Unit: callback data, allowlist/pairing, store persistence, formatting and escaping,
-  Telegram client (mocked fetch), host client, OpenCode client, form engine, command
-  router, event policy.
+  rich replies and part splitting, Telegram client (mocked fetch), host client, OpenCode
+  client, form engine, command router, event policy.
 - Smoke: real loopback HTTP service + fake Telegram API + fake host callback; post a
   `question-asked` event, extract the inline button, feed it back as a Telegram update,
   assert `sessions.answerForm`; restart with the same data dir and assert the mapping and

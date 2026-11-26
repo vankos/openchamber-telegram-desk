@@ -5,7 +5,7 @@ session arrive as Telegram cards with buttons; the answer goes back to the sessi
 asked. A small command surface covers `/status`, `/sessions`, `/send`, `/stop`, `/digest`,
 and replying to any bot message sends the text to its session.
 
-Status: v1.0.0. The design and the SDK constraints are in
+Status: v1.1.0. The design and the SDK constraints are in
 [`docs/design.md`](docs/design.md). The real-token checklist is in
 [`docs/smoke-test.md`](docs/smoke-test.md).
 
@@ -16,9 +16,11 @@ Status: v1.0.0. The design and the SDK constraints are in
   Submit button. Text, number, boolean and multiselect fields are supported.
 - **Permission cards.** `Allow once` and `Deny` only. “Always allow” stays a click in
   OpenChamber on purpose.
-- **Turn notices.** Finished and failed turns produce short messages, with per-session and
-  global cooldowns. The default mode is `all`; switch to `active` to hear only from sessions
-  that recently interacted with Telegram, or `off`.
+- **Turn notices.** Finished turns send the agent's full reply, formatted as a Telegram rich
+  message when it fits (32k characters) or split across ordinary messages otherwise. Failed
+  turns send a short error card. Per-session and global cooldowns apply. The default mode is
+  `all`; switch to `active` to hear only from sessions that recently interacted with
+  Telegram, or `off`.
 - **Reply routing.** Reply to any bot message and the text goes to the session it belongs
   to. Replying to an open question card answers its text field instead.
 - **Commands.** `/status`, `/sessions`, `/send`, `/stop`, `/digest`, `/help`.
@@ -126,10 +128,12 @@ press does nothing else.
 - Only allowlisted user or chat IDs are processed. Unknown non-`/start` commands are ignored.
 - Pairing is private-chat only, one code at a time, 10-minute TTL, one use, and rate
   limited per chat.
-- All agent/user text is HTML-escaped; the bot never interprets agent Markdown. Telegram
-  parse errors fall back to plain text once.
-- Messages are capped below Telegram's 4096-character limit. Option labels, resources,
-  titles and reply excerpts have their own caps.
+- Text in ordinary messages is HTML-escaped, and Telegram parse errors fall back to plain
+  text once. Rich messages carry the agent's Markdown to Telegram's rich-text parser; if
+  Telegram refuses one, the same reply goes out as escaped HTML parts.
+- Ordinary messages stay under Telegram's 4096-character limit; a reply that does not fit a
+  rich message is split across parts. Option labels, resources and titles have their own
+  caps.
 - Callback queries are deduplicated, updates and event IDs are deduplicated, and terminal
   refs (permission answer, submit, dismiss) are single-use in practice because the
   underlying request closes.

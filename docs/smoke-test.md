@@ -79,15 +79,18 @@ If the agent opens an answerable page:
 ## 4. Turn notifications
 
 1. Keep the default `all` mode and let any top-level session finish.
-2. Expected: one short “finished” message mapped to the session. Reply to it with a
+2. Expected: the agent's full reply, not an excerpt. A reply that fits arrives as one rich
+   message with its Markdown rendered (bold, code, links, tables); the full text is present.
+3. Ask the agent for a reply longer than 4,000 characters. Expected: several messages, each
+   mapped to the session; the last one carries the reply hint. Reply to any part with a
    follow-up; expected: the text reaches the session.
-3. Switch to `active`, send `/send <session> continue` from Telegram so the session
+4. Switch to `active`, send `/send <session> continue` from Telegram so the session
    becomes active, finish it, and confirm the notice still arrives.
-4. Check the 20-second per-session cooldown: two quick finished events should not produce
+5. Check the 20-second per-session cooldown: two quick finished events should not produce
    two messages.
-5. Switch the panel mode to `off`; finish another turn; expected: no message. `/digest`
+6. Switch the panel mode to `off`; finish another turn; expected: no message. `/digest`
    still records the event.
-6. Switch to `all`; finish a session that was never touched from Telegram; expected: a
+7. Switch to `all`; finish a session that was never touched from Telegram; expected: a
    notice.
 
 ## 5. Commands

@@ -47,6 +47,22 @@ test('getMe and sendMessage use the bot URL and JSON body', async () => {
   assert.equal(body.reply_markup.inline_keyboard[0][0].text, 'Yes');
 });
 
+test('sendRichMessage sends the rich payload with reply and silence flags', async () => {
+  const { client, calls } = makeClient(async () => jsonResponse({ ok: true, result: { message_id: 88 } }));
+  await client.sendRichMessage({
+    chatId: 5,
+    rich: { markdown: '**Hi**' },
+    replyToMessageId: 10,
+    disableNotification: true,
+  });
+  const body = JSON.parse(calls[0].options.body);
+  assert.equal(body.chat_id, 5);
+  assert.deepEqual(body.rich_message, { markdown: '**Hi**' });
+  assert.deepEqual(body.reply_parameters, { message_id: 10, allow_sending_without_reply: true });
+  assert.equal(body.disable_notification, true);
+  assert.match(calls[0].url, /\/sendRichMessage$/);
+});
+
 test('falls back to plain text when Telegram rejects HTML entities', async () => {
   const { client, calls } = makeClient(async (url, options, count) => {
     if (count === 1) return jsonResponse({ ok: false, error_code: 400, description: "Bad Request: can't parse entities" }, 400);

@@ -69,14 +69,23 @@ test('pair attempts are limited per window', async () => {
 
 test('outbox persists, updates and removes entries', async () => {
   const { dir, store } = await makeStore();
-  const item = store.addOutbox({ chatId: 1, text: '<b>Hi</b>', keyboard: [[{ text: 'A', callback_data: 'td1:q:ab12cd34ef' }]] });
+  const item = store.addOutbox({
+    chatId: 1,
+    text: '<b>Hi</b>',
+    keyboard: [[{ text: 'A', callback_data: 'td1:q:ab12cd34ef' }]],
+    parts: [{ text: '<b>Hi</b>', plain: 'Hi' }, { text: 'there', plain: 'there' }],
+    rich: { markdown: '**Hi**' },
+  });
   assert.equal(store.dueOutbox(1_000).length, 1);
-  store.updateOutbox(item.id, { attempts: 2, nextAt: 5_000 });
+  store.updateOutbox(item.id, { attempts: 2, nextAt: 5_000, sentParts: 1 });
   assert.equal(store.dueOutbox(2_000).length, 0);
   await store.flush();
   const reloaded = new Store({ dir, clock: () => 3_000 });
   await reloaded.load();
   assert.equal(reloaded.state.outbox[0].text, '<b>Hi</b>');
+  assert.equal(reloaded.state.outbox[0].parts.length, 2);
+  assert.equal(reloaded.state.outbox[0].rich.markdown, '**Hi**');
+  assert.equal(reloaded.state.outbox[0].sentParts, 1);
   reloaded.removeOutbox(item.id);
   assert.equal(reloaded.state.outbox.length, 0);
 });
