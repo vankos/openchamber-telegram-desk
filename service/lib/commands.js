@@ -188,6 +188,16 @@ const createCommands = ({
         return { error: `Session prefix “${value}” is ambiguous: ${prefixed.slice(0, 5).map((s) => s.id).join(', ')}` };
       }
     }
+    if (/^ses_[A-Za-z0-9]+$/.test(value)) {
+      return {
+        session: {
+          id: value,
+          title: store.state.sessionRegistry[value]?.title ?? value,
+          directory: store.state.sessionRegistry[value]?.directory ?? null,
+          updatedAt: store.state.sessionRegistry[value]?.updatedAt ?? 0,
+        },
+      };
+    }
     const lower = value.toLowerCase();
     const exactTitle = sessions.filter((session) => (session.title ?? '').trim().toLowerCase() === lower);
     if (exactTitle.length === 1) return { session: exactTitle[0] };

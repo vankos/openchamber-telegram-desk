@@ -377,6 +377,8 @@ const createSessionEvents = ({
   const closeForm = async (form, note = 'Question closed in OpenChamber.') => {
     form.closed = true;
     form.updatedAt = clock();
+    const key = `${form.sessionId}:${form.formId}`;
+    store.state.outbox = store.state.outbox.filter((item) => item.formKey !== key);
     if (form.messageId && form.chatId) {
       const rendered = renderDismissed(form, note);
       try {
