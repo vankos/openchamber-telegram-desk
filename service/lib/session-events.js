@@ -107,8 +107,10 @@ const createSessionEvents = ({
     outbox.enqueue({
       eventId: request.event.id,
       chatId,
-      text: payload.text,
-      plain: payload.plain,
+      text: payload.text ?? payload.parts?.[0]?.text ?? '',
+      plain: payload.plain ?? payload.parts?.[0]?.plain ?? null,
+      parts: payload.parts ?? null,
+      rich: payload.rich ?? null,
       keyboard: payload.keyboard ?? null,
       sessionId: request.event.session.id,
       sessionTitle: request.content?.sessionTitle ?? null,

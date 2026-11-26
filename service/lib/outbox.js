@@ -20,42 +20,85 @@ const createOutbox = ({
   };
 
   const deliver = async (item) => {
-    const message = await telegram.sendMessage({
-      chatId: item.chatId,
-      text: item.text,
-      plain: item.plain,
-      keyboard: item.keyboard,
-      replyToMessageId: item.replyToMessageId,
-      disableNotification: item.kind === 'finish',
-    });
-    const messageId = message?.message_id;
-    if (item.sessionId && Number.isSafeInteger(messageId)) {
-      store.recordMessage(item.chatId, messageId, {
-        sessionId: item.sessionId,
-        sessionTitle: item.sessionTitle,
-        kind: item.kind,
-        formKey: item.formKey,
+    const recordRoute = (message) => {
+      const messageId = message?.message_id;
+      if (item.sessionId && Number.isSafeInteger(messageId)) {
+        store.recordMessage(item.chatId, messageId, {
+          sessionId: item.sessionId,
+          sessionTitle: item.sessionTitle,
+          kind: item.kind,
+          formKey: item.formKey,
+        });
+      }
+      return Number.isSafeInteger(messageId) ? messageId : null;
+    };
+    const complete = (message, messageId) => {
+      if (item.formKey) {
+        const form = store.state.forms[item.formKey];
+        if (form) {
+          form.messageId = Number.isSafeInteger(messageId) ? messageId : form.messageId;
+          form.chatId = item.chatId;
+          form.updatedAt = clock();
+        }
+      }
+      if (item.permissionRef) {
+        const permission = Object.values(store.state.permissions).find((entry) => entry.ref === item.permissionRef);
+        if (permission) {
+          permission.messageId = Number.isSafeInteger(messageId) ? messageId : permission.messageId;
+          permission.chatId = item.chatId;
+        }
+      }
+      store.removeOutbox(item.id);
+      store.bump('sent');
+      finish(item, 'sent');
+      onDelivered?.(item, message);
+    };
+
+    if (item.rich && !(item.sentParts > 0) && typeof telegram.sendRichMessage === 'function') {
+      try {
+        const message = await telegram.sendRichMessage({
+          chatId: item.chatId,
+          rich: item.rich,
+          keyboard: item.keyboard,
+          replyToMessageId: item.replyToMessageId,
+          disableNotification: item.kind === 'finish',
+        });
+        complete(message, recordRoute(message));
+        return;
+      } catch (error) {
+        if (error?.transient || error?.code === 401 || error?.code === 'NO_TOKEN') throw error;
+        logger?.warn('Rich message was refused; falling back to HTML parts', {
+          eventId: item.eventId,
+          code: error?.code,
+          description: error?.description,
+        });
+        store.updateOutbox(item.id, { rich: null });
+        item.rich = null;
+      }
+    }
+
+    const parts = Array.isArray(item.parts) && item.parts.length
+      ? item.parts
+      : [{ text: item.text, plain: item.plain }];
+    const start = Number.isSafeInteger(item.sentParts) && item.sentParts > 0 ? item.sentParts : 0;
+    let lastMessage = null;
+    let lastMessageId = null;
+    for (let index = start; index < parts.length; index += 1) {
+      const part = parts[index];
+      const isLast = index === parts.length - 1;
+      const message = await telegram.sendMessage({
+        chatId: item.chatId,
+        text: part.text,
+        plain: part.plain,
+        keyboard: isLast ? item.keyboard : null,
+        replyToMessageId: index === 0 ? item.replyToMessageId : null,
+        disableNotification: item.kind === 'finish',
       });
+      lastMessage = message;
+      lastMessageId = recordRoute(message) ?? lastMessageId;
+      if (!isLast) store.updateOutbox(item.id, { sentParts: index + 1 });
     }
-    if (item.formKey) {
-      const form = store.state.forms[item.formKey];
-      if (form) {
-        form.messageId = Number.isSafeInteger(messageId) ? messageId : form.messageId;
-        form.chatId = item.chatId;
-        form.updatedAt = clock();
-      }
-    }
-    if (item.permissionRef) {
-      const permission = Object.values(store.state.permissions).find((entry) => entry.ref === item.permissionRef);
-      if (permission) {
-        permission.messageId = Number.isSafeInteger(messageId) ? messageId : permission.messageId;
-        permission.chatId = item.chatId;
-      }
-    }
-    store.removeOutbox(item.id);
-    store.bump('sent');
-    finish(item, 'sent');
-    onDelivered?.(item, message);
+    complete(lastMessage, lastMessageId);
   };
 
   const drain = () => {

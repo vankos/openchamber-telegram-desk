@@ -54,11 +54,43 @@ test('formatPermission escapes text and caps resources', () => {
   assert.ok(card.text.length < 4096);
 });
 
-test('formatTurnFinished keeps a bounded excerpt and plain fallback', () => {
-  const card = formatTurnFinished({ sessionTitle: 'Fix', reply: 'x'.repeat(5000), replyTruncated: false });
-  assert.ok(card.text.length < 1200);
-  assert.match(card.text, /finished/);
-  assert.ok(card.plain.includes('Fix'));
+test('formatTurnFinished sends the whole reply in parts under the limit', () => {
+  const reply = Array.from({ length: 600 }, (_, index) => `line ${index} ${'x'.repeat(20)}`).join('\n');
+  const card = formatTurnFinished({ sessionTitle: 'Fix', reply, replyTruncated: false });
+  assert.ok(card.parts.length > 1);
+  assert.match(card.parts[0].text, /finished/);
+  assert.match(card.parts[0].text, /line 0 /);
+  assert.match(card.parts.at(-1).text, /line 599 /);
+  assert.match(card.parts.at(-1).text, /continue the session/);
+  for (const part of card.parts) {
+    assert.ok(part.text.length <= 3900, `part too long: ${part.text.length}`);
+    assert.ok(part.plain.length <= 3900);
+  }
+  const plain = card.parts.map((part) => part.plain).join('\n');
+  assert.ok(plain.includes('line 0 '));
+  assert.ok(plain.includes('line 599 '));
+});
+
+test('formatTurnFinished escapes each part and marks a truncated reply', () => {
+  const reply = `${'a&<>\n'.repeat(2000)}END`;
+  const card = formatTurnFinished({ sessionTitle: 'Fix', reply, replyTruncated: true });
+  assert.ok(card.parts.length > 1);
+  for (const part of card.parts) {
+    const withoutTags = part.text.replace(/<\/?(b|i)>/g, '');
+    assert.ok(!/[<>]/.test(withoutTags), 'reply text must stay escaped');
+    assert.ok(!/&[a-z]*$/.test(part.text), 'entity must stay intact');
+    assert.ok(part.text.length <= 3900);
+  }
+  assert.match(card.parts.at(-1).text, /truncated by OpenChamber/);
+  assert.match(card.parts.at(-1).text, /continue the session/);
+
+  const short = formatTurnFinished({ sessionTitle: 'Fix', reply: 'done', replyTruncated: false });
+  assert.equal(short.parts.length, 1);
+  assert.match(short.parts[0].text, /done/);
+
+  const empty = formatTurnFinished({ sessionTitle: 'Fix', reply: '', replyTruncated: false });
+  assert.equal(empty.parts.length, 1);
+  assert.match(empty.parts[0].text, /finished/);
 });
 
 test('formatTurnFailed includes the error type', () => {

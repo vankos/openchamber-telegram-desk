@@ -27,7 +27,7 @@ const baseEvent = (type, extra = {}) => ({
   },
 });
 
-const makeHarness = async ({ notifySetting = 'active' } = {}) => {
+const makeHarness = async ({ notifySetting = 'active', rich = false } = {}) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'telegram-desk-events-'));
   let now = 1_000_000;
   const store = new Store({ dir, clock: () => now, logger: silentLogger });
@@ -35,6 +35,7 @@ const makeHarness = async ({ notifySetting = 'active' } = {}) => {
   store.setPrimaryChat(100);
   store.addPairedId(100);
   const sent = [];
+  const richSent = [];
   const edits = [];
   const telegram = {
     async sendMessage(payload) {
@@ -46,6 +47,12 @@ const makeHarness = async ({ notifySetting = 'active' } = {}) => {
       return true;
     },
   };
+  if (rich) {
+    telegram.sendRichMessage = async (payload) => {
+      richSent.push(payload);
+      return { message_id: 800 + richSent.length };
+    };
+  }
   const hostCalls = [];
   const host = {
     available: true,
@@ -68,6 +75,7 @@ const makeHarness = async ({ notifySetting = 'active' } = {}) => {
     dir,
     store,
     sent,
+    richSent,
     edits,
     hostCalls,
     outbox,
@@ -167,7 +175,50 @@ test('turn-finished notifies only watched sessions in active mode', async () => 
   assert.match(h.sent[0].text, /Watched/);
 });
 
-test('turn-finished is suppressed in off mode and for subagents', async () => {
+test('turn-finished sends a rich message when Telegram supports it', async () => {
+  const h = await makeHarness({ notifySetting: 'all', rich: true });
+  const request = baseEvent('turn-finished');
+  request.content = {
+    type: 'turn-finished',
+    sessionTitle: 'Fix *parser*',
+    reply: '**Done.**\n\n```js\nconst x = 1;\n```',
+    replyTruncated: false,
+  };
+  await h.events.handle(request);
+  await settle();
+  await h.outbox.drain();
+  assert.equal(h.sent.length, 0);
+  assert.equal(h.richSent.length, 1);
+  assert.match(h.richSent[0].rich.markdown, /\*\*Done\.\*\*/);
+  assert.match(h.richSent[0].rich.markdown, /Fix \\\*parser\\\*/);
+  assert.equal(h.store.messageRoute(100, 801).sessionId, 'ses_1');
+  assert.equal(h.store.state.outbox.length, 0);
+});
+
+test('turn-finished splits a reply too large for one rich message', async () => {
+  const h = await makeHarness({ notifySetting: 'all', rich: true });
+  const request = baseEvent('turn-finished');
+  request.content = {
+    type: 'turn-finished',
+    sessionTitle: 'Huge',
+    reply: 'z'.repeat(40000),
+    replyTruncated: true,
+  };
+  await h.events.handle(request);
+  await settle();
+  await h.outbox.drain();
+  assert.equal(h.richSent.length, 0);
+  assert.ok(h.sent.length > 1);
+  assert.ok(h.sent.every((message) => message.text.length <= 4096));
+  assert.match(h.sent[0].text, /finished/);
+  assert.match(h.sent.at(-1).text, /truncated by OpenChamber/);
+  for (let index = 0; index < h.sent.length; index += 1) {
+    assert.equal(h.store.messageRoute(100, 501 + index).sessionId, 'ses_1');
+  }
+  assert.equal(h.store.state.stats.sent, 1);
+});
+
+
   const off = await makeHarness({ notifySetting: 'off' });
   off.store.watchSession('ses_1');
   const request = baseEvent('turn-finished');

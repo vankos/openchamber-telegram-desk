@@ -127,6 +127,22 @@ const createTelegramClient = ({
         return call('sendMessage', fallback);
       }
     },
+    async sendRichMessage({
+      chatId,
+      rich,
+      keyboard = null,
+      replyToMessageId = null,
+      disableNotification = false,
+    }) {
+      const payload = {
+        chat_id: chatId,
+        rich_message: rich,
+        ...(disableNotification ? { disable_notification: true } : {}),
+        ...(replyToMessageId ? { reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true } } : {}),
+        ...(keyboard ? { reply_markup: { inline_keyboard: keyboard } } : {}),
+      };
+      return call('sendRichMessage', payload);
+    },
     async editMessageText({
       chatId,
       messageId,

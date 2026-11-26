@@ -2,6 +2,7 @@
 
 const MAX_MESSAGE = 4096;
 const SAFE_MESSAGE = 3900;
+const RICH_LIMIT = 32000;
 
 const escapeHtml = (value) => String(value ?? '')
   .replace(/&/g, '&amp;')
@@ -39,6 +40,61 @@ const clipHtmlSafe = (html, max = SAFE_MESSAGE) => {
     if (gt === -1 || gt >= cut) cut = lastLt;
   }
   return `${text.slice(0, Math.max(0, cut))}…`;
+};
+
+/**
+ * Split raw text into escaped HTML chunks, each within max characters after escaping.
+ * Line breaks are preferred; a single longer line is cut between code points. Escaping
+ * happens per chunk, so an entity or a tag is never torn in the middle.
+ */
+const splitEscapedText = (value, max) => {
+  const text = String(value ?? '').replace(/\r\n?/g, '\n').replace(/^\n+|\n+$/g, '');
+  if (!text || !Number.isFinite(max) || max <= 0) return [];
+
+  const units = [];
+  for (const line of text.split('\n')) {
+    if (escapeHtml(line).length <= max) {
+      units.push(line);
+      continue;
+    }
+    const points = Array.from(line);
+    let at = 0;
+    while (at < points.length) {
+      let low = 1;
+      let high = points.length - at;
+      let best = 0;
+      while (low <= high) {
+        const middle = Math.floor((low + high) / 2);
+        if (escapeHtml(points.slice(at, at + middle).join('')).length <= max) {
+          best = middle;
+          low = middle + 1;
+        } else {
+          high = middle - 1;
+        }
+      }
+      if (best <= 0) best = 1;
+      units.push(points.slice(at, at + best).join(''));
+      at += best;
+    }
+  }
+
+  const chunks = [];
+  let current = '';
+  let length = 0;
+  for (const unit of units) {
+    const escapedLength = escapeHtml(unit).length;
+    const grown = current ? length + 1 + escapedLength : escapedLength;
+    if (current && grown > max) {
+      chunks.push(escapeHtml(current));
+      current = unit;
+      length = escapedLength;
+    } else {
+      current = current ? `${current}\n${unit}` : unit;
+      length = grown;
+    }
+  }
+  if (current) chunks.push(escapeHtml(current));
+  return chunks;
 };
 
 const htmlToPlain = (html) => String(html ?? '')
@@ -95,6 +151,8 @@ const statusWord = (status) => ({
 
 const sessionTitle = (title, id) => clip(title?.trim() || id || 'Untitled session', 90);
 
+const escapeMarkdown = (value) => String(value ?? '').replace(/([\\`*_\[\]<>#$~=|])/g, '\\$1');
+
 const directoryName = (directory) => {
   if (!directory) return '';
   const parts = String(directory).split(/[\\/]+/).filter(Boolean);
@@ -120,12 +178,38 @@ const formatPermission = ({ sessionTitle: title, action, resources, message }) =
 };
 
 const formatTurnFinished = ({ sessionTitle: title, reply, replyTruncated }) => {
-  const lines = [`✅ <b>${escapeHtml(sessionTitle(title))}</b> finished.`];
-  const excerpt = clip(String(reply ?? '').trim(), 700);
-  if (excerpt) lines.push(`<blockquote>${escapeHtml(excerpt)}${replyTruncated ? '…' : ''}</blockquote>`);
-  lines.push('<i>Reply to this message to continue the session.</i>');
-  const html = clipHtmlSafe(lines.join('\n'));
-  return { text: html, plain: htmlToPlain(html) };
+  const head = `✅ <b>${escapeHtml(sessionTitle(title))}</b> finished.`;
+  const footer = '<i>Reply to this message to continue the session.</i>';
+  const note = replyTruncated ? '<i>The reply was truncated by OpenChamber.</i>' : '';
+  const tail = [note, footer].filter(Boolean).join('\n');
+  const body = String(reply ?? '').trim();
+  const build = () => {
+    if (!body) return null;
+    // Every part keeps room for the heading and the tail, so a part can be first or last.
+    const room = SAFE_MESSAGE - head.length - tail.length - 6;
+    const chunks = splitEscapedText(body, Math.max(1, room));
+    if (!chunks.length) return null;
+    return chunks.map((chunk, index) => {
+      const pieces = [];
+      if (index === 0) pieces.push(head);
+      pieces.push(chunk);
+      if (index === chunks.length - 1) pieces.push(tail);
+      const text = pieces.join('\n\n');
+      return { text, plain: htmlToPlain(text) };
+    });
+  };
+  const parts = build() ?? [{ text: `${head}\n\n${tail}`, plain: htmlToPlain(`${head}\n\n${tail}`) }];
+  // Telegram rich text carries the agent's Markdown as-is; an over-long or refused one falls back to parts.
+  let rich = null;
+  if (body && body.length + 1000 <= RICH_LIMIT) {
+    const heading = `**✅ ${escapeMarkdown(sessionTitle(title).replace(/\s+/g, ' '))} finished.**`;
+    const richNote = replyTruncated ? '_The reply was truncated by OpenChamber._' : '';
+    const markdown = [heading, body, richNote, '_Reply to this message to continue the session._']
+      .filter(Boolean)
+      .join('\n\n');
+    if (markdown.length <= RICH_LIMIT) rich = { markdown };
+  }
+  return rich ? { parts, rich } : { parts };
 };
 
 const formatTurnFailed = ({ sessionTitle: title, error }) => {
