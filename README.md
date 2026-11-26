@@ -63,7 +63,9 @@ Status: v1.0.0. The design and the SDK constraints are in
 
 The bot token is stored by OpenChamber as a `secret` integration setting. The service reads
 it through `readSettings`; the panel never receives it, and it is never written to the
-service state file.
+service state file. OpenChamber 2.8 writes integration settings to
+`%USERPROFILE%\.config\openchamber\guest-auth.json` in plain text — treat that folder as a
+secret and do not sync or commit it.
 
 ## Commands
 
@@ -119,7 +121,8 @@ press does nothing else.
 - The service binds to `127.0.0.1` only and requires
   `Authorization: Bearer $OPENCHAMBER_SERVICE_TOKEN` on every route, including `/health`.
 - The bot token is never returned by `/status`, never stored in `state.json`, and is
-  redacted from logs together with bearer values.
+  redacted from logs together with bearer values. Its storage is OpenChamber's:
+  `guest-auth.json` in the OpenChamber config folder holds it in plain text (see above).
 - Only allowlisted user or chat IDs are processed. Unknown non-`/start` commands are ignored.
 - Pairing is private-chat only, one code at a time, 10-minute TTL, one use, and rate
   limited per chat.
