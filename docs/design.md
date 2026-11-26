@@ -127,7 +127,8 @@ the underlying request is still open. Refs are removed with their form/permissio
 
 ### Lifecycle and pruning
 
-- `messages` and refs are kept for 14 days, forms and permissions for 7 days.
+- `messages` and refs are kept for 14 days; open forms and permissions for 7 days, closed
+  forms for 1 day.
 - `processedCallbacks` (3 days), `seenEvents` (7 days), `seenUpdates` (1 day) are bounded.
 - `recentEvents` keeps the last 40 metadata records for the panel and `/digest`.
 - `outbox` is capped at 100 items; old items are dropped with a recorded failure.
@@ -245,7 +246,9 @@ accepted a send but before the outbox item was removed; the message may repeat.
 - **Rate limits.** Per-chat command and callback token buckets; per-session and global
   notification cooldowns; outbox pacing. Telegram 429 `retry_after` is honoured.
 - **No transcript logs.** Logs contain IDs, types and error codes, not message bodies or
-  form answers. The outbox is the only place with rendered text, and it is pruned.
+  form answers. The outbox is the only place with rendered text, and it is pruned. Open
+  form answers are persisted so a button or text reply still works after a restart; the
+  data folder is removed with the extension.
 
 ## 6. Commands and notifications
 
@@ -262,9 +265,9 @@ accepted a send but before the outbox item was removed; the message may repeat.
 
 Notification modes:
 
-- `all` — every top-level turn finish/failure.
-- `active` (default) — only sessions that asked a question, requested a permission, were
-  messaged from Telegram, or had a Telegram reply in the last 24 h.
+- `all` (default) — every top-level turn finish/failure, still under the cooldowns below.
+- `active` — only sessions that asked a question, requested a permission, were messaged
+  from Telegram, or had a Telegram reply in the last 24 h.
 - `off` — no turn notifications.
 
 A session finish is additionally suppressed for 20 s per session and 10 per minute
