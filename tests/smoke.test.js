@@ -94,12 +94,20 @@ const createHarness = async (dataDir) => {
     },
     async needsConfiguration() { return { saved: true }; },
     sessions: {
+      async start(...args) { hostCalls.push(['start', ...args]); return { sessionId: 'ses_new', directory: '/repo' }; },
       async send(...args) { hostCalls.push(['send', ...args]); return { sent: true }; },
       async stop(...args) { hostCalls.push(['stop', ...args]); return { stopped: true }; },
       async status(...args) { hostCalls.push(['status', ...args]); return { status: 'idle' }; },
       async answerForm(...args) { hostCalls.push(['answerForm', ...args]); return { answered: true }; },
       async answerPermission(...args) { hostCalls.push(['answerPermission', ...args]); return { answered: true }; },
     },
+  };
+  const opencode = {
+    available: true,
+    async listSessions() {
+      return [{ id: 'ses_seed', title: 'Seed project', parentId: null, directory: '/repo', updatedAt: 900 }];
+    },
+    async listActiveSessionIds() { return new Set(); },
   };
   const service = createDeskService({
     env: {
@@ -111,6 +119,7 @@ const createHarness = async (dataDir) => {
     clock: () => 1_000,
     startLoops: false,
     hostOverride: host,
+    opencodeOverride: opencode,
     telegramOverride: telegram,
   });
   const { port } = await service.start();
@@ -363,6 +372,48 @@ test('smoke: permission card answers through the host and unauthorized chats are
     assert.equal(notify.body.mode, 'off');
     const status = await api(h.port, 'GET', '/status');
     assert.equal(status.body.preferences.notifyMode, 'off');
+  } finally {
+    await h.service.stop();
+  }
+});
+
+test('smoke: /new starts a session and routes its confirmation', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'telegram-desk-smoke-'));
+  const h = await createHarness(dir);
+  try {
+    await h.service.handleTelegramUpdate({
+      update_id: 200,
+      message: {
+        message_id: 10,
+        from: { id: 100, is_bot: false },
+        chat: { id: 100, type: 'private' },
+        text: '/new fix the failing tests',
+      },
+    });
+    const start = h.hostCalls.find((call) => call[0] === 'start');
+    assert.deepEqual(start, ['start', { prompt: 'fix the failing tests', directory: '/repo' }]);
+    assert.equal(h.sent.length, 1);
+    assert.match(h.sent[0].text, /New session started/);
+    assert.match(h.sent[0].text, /ses_new/);
+    assert.equal(h.service.store.messageRoute(100, 501).sessionId, 'ses_new');
+    assert.equal(h.service.store.isWatched('ses_new'), true);
+
+    await h.service.handleTelegramUpdate({
+      update_id: 201,
+      message: {
+        message_id: 11,
+        from: { id: 100, is_bot: false },
+        chat: { id: 100, type: 'private' },
+        text: 'one more thing',
+        reply_to_message: {
+          message_id: 501,
+          from: { id: 1, is_bot: true, username: 'desk_bot' },
+        },
+      },
+    });
+    const sent = h.hostCalls.find((call) => call[0] === 'send');
+    assert.deepEqual(sent, ['send', 'ses_new', 'one more thing']);
+    assert.equal(h.service.store.state.offset, 202);
   } finally {
     await h.service.stop();
   }

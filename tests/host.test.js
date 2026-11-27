@@ -35,6 +35,16 @@ test('calls the host callback with the service bearer', async () => {
   });
 });
 
+test('starts a session with the prompt and optional directory', async () => {
+  const { client, calls } = makeHost(async () => json({ result: { sessionId: 'ses_new', directory: '/repo' } }));
+  const result = await client.sessions.start({ prompt: 'fix it', directory: '/repo' });
+  assert.deepEqual(result, { sessionId: 'ses_new', directory: '/repo' });
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    method: 'sessions.start',
+    input: { prompt: 'fix it', directory: '/repo' },
+  });
+});
+
 test('answers forms and permissions with the right input shapes', async () => {
   const { client, calls } = makeHost(async () => json({ result: { answered: true } }));
   await client.sessions.answerForm('ses_1', 'frm_1', { choice: 'yes' }, 'from Telegram');

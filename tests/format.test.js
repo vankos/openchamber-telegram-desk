@@ -16,6 +16,7 @@ const {
   formatDigest,
   formatStartHelp,
   formatHelp,
+  formatNewSession,
   formatTestMessage,
 } = require('../service/lib/format');
 
@@ -135,6 +136,14 @@ test('formatSessions numbers sessions and stores readable IDs', () => {
   });
   assert.match(card.text, /1\./);
   assert.match(card.text, /ses_1234567890/);
+});
+
+test('formatNewSession shows the id and project and escapes them', () => {
+  const card = formatNewSession({ sessionId: 'ses_<1>', directory: '/repo/My & Co' });
+  assert.match(card.text, /ses_&lt;1&gt;/);
+  assert.match(card.text, /My &amp; Co/);
+  assert.match(card.plain, /ses_<1>/);
+  assert.match(card.plain, /Reply to this message/);
 });
 
 test('formatDigest reports counts and pending answers', () => {

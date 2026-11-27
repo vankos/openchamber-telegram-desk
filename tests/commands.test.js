@@ -33,6 +33,7 @@ const makeHarness = async () => {
   const host = {
     available: true,
     sessions: {
+      async start(...args) { hostCalls.push(['start', ...args]); return { sessionId: 'ses_new', directory: '/repo/one' }; },
       async send(...args) { hostCalls.push(['send', ...args]); return { sent: true }; },
       async stop(...args) { hostCalls.push(['stop', ...args]); return { stopped: true }; },
       async status(sessionId) { hostCalls.push(['status', sessionId]); return { status: sessionId === 'ses_2' ? 'busy' : 'idle' }; },
@@ -58,7 +59,7 @@ const makeHarness = async () => {
   const commands = createCommands({
     store, host, opencode, sessionEvents, answerEngine, logger: silentLogger, getSettings: () => settings, clock: () => now,
   });
-  return { dir, store, settings, sent, hostCalls, outbox, sessionEvents, answerEngine, commands, advance: (ms) => { now += ms; } };
+  return { dir, store, settings, sent, hostCalls, host, opencode, outbox, sessionEvents, answerEngine, commands, advance: (ms) => { now += ms; } };
 };
 
 test('unauthorized chats are ignored', async () => {
@@ -111,6 +112,61 @@ test('/sessions stores indexes and /send resolves an index', async () => {
   });
   assert.match(sent.text, /Sent to/);
   assert.deepEqual(h.hostCalls.find((call) => call[0] === 'send'), ['send', 'ses_1', 'please continue']);
+});
+
+test('/new starts a session with the task and routes the confirmation', async () => {
+  const h = await makeHarness();
+  h.store.setPrimaryChat(100);
+  h.store.addPairedId(100);
+  const result = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/new fix the failing tests', isPrivate: true, chatType: 'private',
+  });
+  assert.match(result.text, /New session started/);
+  assert.match(result.text, /ses_new/);
+  assert.equal(result.sessionId, 'ses_new');
+  assert.deepEqual(h.hostCalls.find((call) => call[0] === 'start'), ['start', { prompt: 'fix the failing tests', directory: '/repo/one' }]);
+  assert.equal(h.store.isWatched('ses_new'), true);
+  assert.equal(h.store.state.sessionRegistry.ses_new.status, 'busy');
+  assert.equal(h.store.state.sessionRegistry.ses_new.directory, '/repo/one');
+});
+
+test('/new requires a task', async () => {
+  const h = await makeHarness();
+  h.store.setPrimaryChat(100);
+  h.store.addPairedId(100);
+  const result = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/new', isPrivate: true, chatType: 'private',
+  });
+  assert.match(result.text, /Usage: \/new/);
+  assert.equal(h.hostCalls.filter((call) => call[0] === 'start').length, 0);
+});
+
+test('/new explains when no project is known', async () => {
+  const h = await makeHarness();
+  h.store.setPrimaryChat(100);
+  h.store.addPairedId(100);
+  h.opencode.listSessions = async () => [];
+  const result = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/new ship it', isPrivate: true, chatType: 'private',
+  });
+  assert.match(result.text, /No project is known/);
+  assert.equal(h.hostCalls.filter((call) => call[0] === 'start').length, 0);
+});
+
+test('/new explains a missing model', async () => {
+  const h = await makeHarness();
+  h.store.setPrimaryChat(100);
+  h.store.addPairedId(100);
+  h.host.sessions.start = async () => {
+    const error = new Error('No model');
+    error.code = 'NO_MODEL';
+    throw error;
+  };
+  const result = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/new go', isPrivate: true, chatType: 'private',
+  });
+  assert.match(result.text, /No model/);
+  assert.equal(result.sessionId, undefined);
 });
 
 test('/send resolves a unique id prefix and closes an open form', async () => {
