@@ -15,6 +15,7 @@ const {
   formatAlreadyPaired,
   formatPairInvalid,
   formatSendSuccess,
+  formatNewSession,
   formatStopResult,
   formatReplySent,
   formatNoTarget,
@@ -67,6 +68,18 @@ const splitStopTarget = (args) => {
   const quoted = /^"([^"]+)"$/.exec(joined) ?? /^'([^']+)'$/.exec(joined);
   return quoted ? quoted[1] : args[0];
 };
+
+const START_ERRORS = {
+  NO_DIRECTORY: 'Open a project in OpenChamber first, then try /new again.',
+  NO_MODEL: 'No model is selected for new sessions. Pick one in OpenChamber settings, then try again.',
+  NOT_GRANTED: 'Session control is not granted to Telegram Desk. Approve it in OpenChamber.',
+  TOO_MANY_PROMPTS: 'OpenChamber limits a service to 60 prompts an hour. Try again later.',
+  HOST_UNAVAILABLE: 'OpenChamber did not answer. Try again.',
+};
+
+const startErrorMessage = (error) => START_ERRORS[error?.code]
+  ?? safeError(error).message
+  ?? 'Could not start a session.';
 
 const createCommands = ({
   store,
@@ -171,7 +184,7 @@ const createCommands = ({
     const value = String(target ?? '').trim().replace(/^[#@]/, '');
     if (!value) return { error: 'A session is required.' };
     const sessions = await listSessions({ includeSubagents: true, withStatus: false, limit: 100 });
-    if (!sessions.length) return { error: 'No sessions are known yet. Open a session in OpenChamber first.' };
+    if (!sessions.length) return { error: 'No sessions are known yet. Open one in OpenChamber or use /new <task>.' };
     if (/^\d+$/.test(value)) {
       const ids = store.lastSessionList(chatId);
       const id = ids[Number(value) - 1];
@@ -277,6 +290,35 @@ const createCommands = ({
         const sessions = await listSessions({ withStatus: true, limit: 25 });
         store.setLastSessionList(chatId, sessions.map((session) => session.id));
         return reply(formatSessions({ sessions, now: clock() }));
+      }
+      case '/new': {
+        const task = String(rest ?? '').trim();
+        if (!task) return reply(formatError('Usage: /new <task>'));
+        if (typeof host?.sessions?.start !== 'function') {
+          return reply(formatError('This OpenChamber version cannot start sessions. Update OpenChamber to 2.8 or newer.'));
+        }
+        try {
+          // A service gets no context directory from the host, so use the project of
+          // the most recently updated top-level session.
+          const recent = await listSessions({ withStatus: false, limit: 1 });
+          const directory = recent[0]?.directory;
+          if (!directory) {
+            return reply(formatError('No project is known yet. Open a project or a session in OpenChamber first.'));
+          }
+          const started = await host.sessions.start({ prompt: task, directory });
+          const sessionId = typeof started?.sessionId === 'string' ? started.sessionId : '';
+          if (!sessionId) return reply(formatError('OpenChamber did not return the new session.'));
+          store.touchSession(sessionId, { status: 'busy', directory: started.directory ?? directory });
+          store.watchSession(sessionId);
+          return {
+            ...reply(formatNewSession({ sessionId, directory: started.directory ?? directory })),
+            sessionId,
+            sessionTitle: store.state.sessionRegistry[sessionId]?.title ?? null,
+          };
+        } catch (error) {
+          logger?.warn('sessions.start failed', { code: error?.code, status: error?.status });
+          return reply(formatError(startErrorMessage(error)));
+        }
       }
       case '/send': {
         const { target, text } = splitTarget(args);

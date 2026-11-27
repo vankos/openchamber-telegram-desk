@@ -243,8 +243,8 @@ const formatPageQuestion = ({ sessionTitle: title, pageTitle }) => {
 const formatStatus = ({ sessions = [], now = Date.now() }) => {
   if (!sessions.length) {
     return {
-      text: '📊 <b>Sessions</b>\nNo sessions known yet. Open a session in OpenChamber first.',
-      plain: 'Sessions\nNo sessions known yet. Open a session in OpenChamber first.',
+      text: '📊 <b>Sessions</b>\nNo sessions known yet. Open one in OpenChamber or use /new &lt;task&gt;.',
+      plain: 'Sessions\nNo sessions known yet. Open one in OpenChamber or use /new <task>.',
     };
   }
   const counts = { busy: 0, waiting: 0, idle: 0, failed: 0, unknown: 0 };
@@ -270,8 +270,8 @@ const formatStatus = ({ sessions = [], now = Date.now() }) => {
 const formatSessions = ({ sessions = [], now = Date.now() }) => {
   if (!sessions.length) {
     return {
-      text: '🗂 <b>Sessions</b>\nNo sessions known yet. Open a session in OpenChamber first.',
-      plain: 'Sessions\nNo sessions known yet. Open a session in OpenChamber first.',
+      text: '🗂 <b>Sessions</b>\nNo sessions known yet. Open one in OpenChamber or use /new &lt;task&gt;.',
+      plain: 'Sessions\nNo sessions known yet. Open one in OpenChamber or use /new <task>.',
     };
   }
   const lines = ['🗂 <b>Recent sessions</b>', ''];
@@ -337,6 +337,7 @@ const formatHelp = () => {
     '🤖 <b>Telegram Desk</b>',
     '/status — waiting, busy and idle sessions',
     '/sessions — recent sessions and IDs',
+    '/new &lt;task&gt; — start a new session with a task',
     '/send &lt;session&gt; &lt;text&gt; — send a message',
     '/stop &lt;session&gt; — stop a running turn',
     '/digest — summary since the last digest',
@@ -369,7 +370,7 @@ const formatPaired = ({ chatId, botUsername }) => {
     'This chat can now receive questions, permission requests and turn notifications.',
     `Chat ID: ${code(chatId)}`,
     '',
-    '/status · /sessions · /send · /stop · /digest · /help',
+    '/status · /sessions · /new · /send · /stop · /digest · /help',
   ].join('\n');
   return { text: clipHtmlSafe(html), plain: htmlToPlain(html) };
 };
@@ -379,7 +380,7 @@ const formatAlreadyPaired = ({ botUsername }) => {
     '✅ This chat is already paired.',
     botUsername ? `<i>Bot: @${escapeHtml(botUsername)}</i>` : '',
     '',
-    '/status · /sessions · /send · /stop · /digest · /help',
+    '/status · /sessions · /new · /send · /stop · /digest · /help',
   ].filter(Boolean).join('\n');
   return { text: clipHtmlSafe(html), plain: htmlToPlain(html) };
 };
@@ -391,6 +392,16 @@ const formatPairInvalid = () => ({
 
 const formatSendSuccess = (title) => {
   const html = `✅ Sent to <b>${escapeHtml(sessionTitle(title))}</b>.`;
+  return { text: html, plain: htmlToPlain(html) };
+};
+
+const formatNewSession = ({ sessionId, directory }) => {
+  const project = directoryName(directory);
+  const html = clipHtmlSafe([
+    '🆕 <b>New session started</b>',
+    `${code(sessionId)}${project ? ` · ${escapeHtml(project)}` : ''}`,
+    '<i>The task was sent. Reply to this message to continue the session.</i>',
+  ].join('\n'));
   return { text: html, plain: htmlToPlain(html) };
 };
 
@@ -461,6 +472,7 @@ module.exports = {
   formatAlreadyPaired,
   formatPairInvalid,
   formatSendSuccess,
+  formatNewSession,
   formatStopResult,
   formatReplySent,
   formatNoTarget,

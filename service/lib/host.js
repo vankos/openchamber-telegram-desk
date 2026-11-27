@@ -64,6 +64,7 @@ const createHostClient = ({
       return call('panels.emit', { topic, data: data ?? null });
     },
     sessions: {
+      start: (input) => call('sessions.start', input),
       send: (sessionId, prompt) => call('sessions.send', { sessionId, prompt }),
       retry: (sessionId) => call('sessions.retry', { sessionId }),
       status: (sessionId) => call('sessions.status', { sessionId }),

@@ -477,11 +477,18 @@ const createDeskService = ({
     });
     if (!result) return;
     try {
-      await telegram.sendMessage({
+      const sentMessage = await telegram.sendMessage({
         chatId: message.chat.id,
         text: result.text,
         plain: result.plain,
       });
+      if (result.sessionId && Number.isSafeInteger(sentMessage?.message_id)) {
+        store.recordMessage(message.chat.id, sentMessage.message_id, {
+          sessionId: result.sessionId,
+          sessionTitle: result.sessionTitle ?? null,
+          kind: 'new',
+        });
+      }
     } catch (error) {
       log.warn('Could not send a Telegram reply', { code: error?.code, status: error?.status });
     }
