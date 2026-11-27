@@ -21,9 +21,10 @@ here patches OpenChamber or OpenCode.
 | `question-asked` content | `ask.kind` (`form` or `page`), form `id`, `title`, `fields[]` with `key/type/title/description/required/options/custom/when` | Form cards and answers |
 | `permission-asked` content | `action`, `resources[]`, `message` | Allow/Deny cards |
 | `turn-finished` / `turn-failed` content | `sessionTitle`, `reply` (64k cap), `replyTruncated`, or `error { type, message }` | Full turn notices (rich message or parts), error cards |
-| `contributes.sessionControl` | `sessions.send`, `stop`, `status`, `lastReply`, `retry`, `answerForm`, `answerPermission` | Commands and callbacks |
+| `contributes.sessionControl` | `sessions.start`, `sessions.send`, `stop`, `status`, `lastReply`, `retry`, `answerForm`, `answerPermission` | Commands and callbacks |
 | `contributes.sessionControl.answers` | `answerForm` / `answerPermission` with the user's authority | Button callbacks |
 | `contributes.service.provides: ["opencode"]` | Loopback `/api/session` (and other listed reads) with the service bearer | `/status`, `/sessions`, `/digest` |
+| `sessions.start` | Creates a session with `prompt`, optional `directory`/`projectId`/`title`/`model`/`agent`; returns `{ sessionId, directory }`; the session is marked `startedByExtension` | `/new` |
 | `service.keepRunning: true` | Service starts with OpenChamber and is restarted when it dies | Telegram long polling |
 | `integration.settings` with `secret: true` | Values stored by OpenChamber and readable only by the service via `readSettings()` | Bot token, allowlist, notification default |
 
@@ -32,6 +33,7 @@ here patches OpenChamber or OpenCode.
 | Gap | Consequence |
 |---|---|
 | No `listSessions` in `sessionControl` | The service uses the separately approved `opencode` role. If that grant is missing, it falls back to sessions observed in events. |
+| A service gets no context directory for `sessions.start` | `session.create` validates the directory, so `/new` passes the directory of the most recent top-level session; without one it asks to open a project first. |
 | `callback_data` is limited to **64 bytes** | The callback carries a short random ref; the ref maps to `sessionId`, `formId`, `requestId`, and option value in persisted state. Embedding full IDs is impossible. |
 | `question-asked` with `ask.kind: "page"` cannot be answered by a service | The bot sends a notice; a reply to that notice goes through `sessions.send`, which closes the page and delivers the text. |
 | No "Always allow" | Permission cards offer **Allow once** / **Deny** only. "Always allow" remains a click in OpenChamber. |
@@ -247,7 +249,8 @@ accepted a send but before the outbox item was removed; the message may repeat.
   Update IDs and event IDs are deduplicated. Refs are single-use where the action is
   terminal (permission answer, submit, dismiss).
 - **Rate limits.** Per-chat command and callback token buckets; per-session and global
-  notification cooldowns; outbox pacing. Telegram 429 `retry_after` is honoured.
+  notification cooldowns; outbox pacing. Telegram 429 `retry_after` is honoured. OpenChamber
+  also limits a service to 60 prompts an hour; `/new` and `/send` share that budget.
 - **No transcript logs.** Logs contain IDs, types and error codes, not message bodies or
   form answers. The outbox is the only place with rendered text, and it is pruned. Open
   form answers are persisted so a button or text reply still works after a restart; the
@@ -260,11 +263,19 @@ accepted a send but before the outbox item was removed; the message may repeat.
 | `/start [code]` | Pair, or explain how to pair |
 | `/status` | Waiting / busy / idle sessions with pending-answer markers |
 | `/sessions` | Recent sessions with IDs and indexes |
+| `/new <task>` | Start a session with `sessions.start` and send the task; the confirmation is mapped to the new session |
 | `/send <session> <text>` | Resolve by index, full ID, unique prefix or unique title; `sessions.send` |
 | `/stop <session>` | Resolve; `sessions.stop` |
 | `/digest` | Counts, pending requests, and events since the last digest |
 | `/help` | Command list |
 | Reply to a bot message | Answer an open form field, or send text to the mapped session |
+
+`/new <task>` calls `sessions.start` with the task and the directory of the most recent
+top-level session: a service gets no context directory from the host, and `session.create`
+validates the directory. If no session or project is known, the command says so. The new
+session is recorded in the local registry as busy and watched, so `active` notifications
+include it. The confirmation message is entered into the message route table, so replying to
+it continues the session.
 
 Notification modes:
 
@@ -285,11 +296,12 @@ session, so a reply to any part continues it; the last part carries the reply hi
 
 - Unit: callback data, allowlist/pairing, store persistence, formatting and escaping,
   rich replies and part splitting, Telegram client (mocked fetch), host client, OpenCode
-  client, form engine, command router, event policy.
+  client, form engine, command router (including `/new` start and fallback), event policy.
 - Smoke: real loopback HTTP service + fake Telegram API + fake host callback; post a
   `question-asked` event, extract the inline button, feed it back as a Telegram update,
   assert `sessions.answerForm`; restart with the same data dir and assert the mapping and
-  offset survive; assert no token appears in logs; assert an unauthorized chat is ignored.
+  offset survive; run `/new`, assert `sessions.start` and the confirmation route; assert no
+  token appears in logs; assert an unauthorized chat is ignored.
 - Manifest: `parseManifestJson` from `@openchamber/sdk` plus the packaged files the host
   checks at install.
 

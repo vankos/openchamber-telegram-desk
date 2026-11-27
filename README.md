@@ -2,10 +2,10 @@
 
 Two-way Telegram control for OpenCode sessions. Questions and permission requests from any
 session arrive as Telegram cards with buttons; the answer goes back to the session that
-asked. A small command surface covers `/status`, `/sessions`, `/send`, `/stop`, `/digest`,
-and replying to any bot message sends the text to its session.
+asked. A small command surface covers `/new`, `/status`, `/sessions`, `/send`, `/stop`,
+`/digest`, and replying to any bot message sends the text to its session.
 
-Status: v1.1.0. The design and the SDK constraints are in
+Status: v1.2.0. The design and the SDK constraints are in
 [`docs/design.md`](docs/design.md). The real-token checklist is in
 [`docs/smoke-test.md`](docs/smoke-test.md).
 
@@ -23,7 +23,7 @@ Status: v1.1.0. The design and the SDK constraints are in
   Telegram, or `off`.
 - **Reply routing.** Reply to any bot message and the text goes to the session it belongs
   to. Replying to an open question card answers its text field instead.
-- **Commands.** `/status`, `/sessions`, `/send`, `/stop`, `/digest`, `/help`.
+- **Commands.** `/new`, `/status`, `/sessions`, `/send`, `/stop`, `/digest`, `/help`.
 - **Pairing and allowlist.** A short-lived code from the panel pairs a private chat. A
   numeric allowlist in the integration settings is the second way in.
 - **Persistence.** Message/request mappings, Telegram offset, the allowlist and the outbox
@@ -76,6 +76,7 @@ secret and do not sync or commit it.
 | `/start [code]` | Pair a private chat, or explain how to pair |
 | `/status` | Sessions grouped as waiting / busy / idle, with pending-answer counts |
 | `/sessions` | Recent sessions with indexes, IDs, projects and relative update time |
+| `/new <task>` | Start a new session with `sessions.start` and send the task |
 | `/send <session> <text>` | Send a message with `sessions.send` |
 | `/stop <session>` | Stop the running turn with `sessions.stop` |
 | `/digest` | Counts, pending answers, and turns since the last digest in this chat |
@@ -91,9 +92,15 @@ secret and do not sync or commit it.
 - a unique title (exact match first, then substring); quote multi-word titles:
   `/send "Fix parser" continue`.
 
+`/new <task>` starts a session in the project of the most recent top-level session and sends
+the task in the same call. OpenChamber 2.8 or newer is required. If no session or project is
+known yet, the command asks to open one in OpenChamber first. The confirmation shows the new
+session id and project and is routed to that session, so a reply continues it. A session
+started this way counts as Telegram activity for the `active` notification mode.
+
 The panel's notification mode is an override stored in service state; the `Turn
 notifications` field in Settings → Integrations is the default used before the panel sets
-one. `/status`, `/sessions`, `/send` and `/stop` work from any allowed chat. Event cards are sent
+one. `/new`, `/status`, `/sessions`, `/send` and `/stop` work from any allowed chat. Event cards are sent
 to the **primary chat** (the first paired chat, or the first ID in the settings allowlist);
 the panel shows which chat that is.
 
@@ -162,6 +169,11 @@ to delete its data folder.
 - **OpenCode session list is optional.** It needs the separately approved `opencode` grant.
   Without it, `/status` and `/sessions` only know sessions observed in events since the
   service started.
+- **`/new` needs OpenChamber 2.8 or newer** and a model selected for new sessions. It starts
+  in the directory of the most recent top-level session; open a project or a session in
+  OpenChamber first.
+- **Prompt budget.** OpenChamber lets a service send at most 60 prompts an hour; `/new` and
+  `/send` share that budget and report the limit when it is reached.
 - **One poller per bot.** Do not run two OpenChamber instances with the same bot token; a
   `getUpdates` conflict backs off but only one process can poll. Use a dedicated bot with
   no webhook set; a webhook makes `getUpdates` fail with a 409.

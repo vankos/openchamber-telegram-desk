@@ -95,6 +95,12 @@ If the agent opens an answerable page:
 
 ## 5. Commands
 
+- `/new summarize the open TODOs` — expected: “New session started” with its id and project;
+  the task starts running in OpenChamber and a finish notice arrives. Reply to the
+  confirmation with a follow-up; expected: it reaches the new session.
+- `/new` without a task — expected: the usage line; no session starts.
+- `/new` when no session or project is known — expected: the reply asks to open a project in
+  OpenChamber first; no session starts.
 - `/status` — expected: counts plus waiting/busy/idle lines with session IDs.
 - `/sessions` — expected: numbered sessions. Then `/send 1 hello` sends “hello” to that
   session.
