@@ -114,6 +114,47 @@ test('/sessions stores indexes and /send resolves an index', async () => {
   assert.deepEqual(h.hostCalls.find((call) => call[0] === 'send'), ['send', 'ses_1', 'please continue']);
 });
 
+test('a deleted session leaves /sessions and an old index cannot misroute', async () => {
+  const h = await makeHarness();
+  h.store.setPrimaryChat(100);
+  h.store.addPairedId(100);
+  h.store.touchSession('ses_gone', { title: 'Deleted session', status: 'busy', directory: '/repo/gone' });
+  h.store.setLastSessionList(100, ['ses_1', 'ses_gone', 'ses_2']);
+  await h.sessionEvents.handle({
+    v: 1,
+    requestId: 'req_deleted',
+    event: {
+      id: 'evt_deleted',
+      type: 'session-deleted',
+      at: 1,
+      session: { id: 'ses_gone', parentId: null },
+      project: { directory: '/repo/gone' },
+      linked: [],
+    },
+  });
+  assert.equal(h.store.state.sessionRegistry.ses_gone, undefined);
+  assert.deepEqual(h.store.lastSessionList(100), ['ses_1', null, 'ses_2']);
+
+  const stale = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/send 2 hello', isPrivate: true, chatType: 'private',
+  });
+  assert.match(stale.text, /No session number 2/);
+  assert.equal(h.hostCalls.filter((call) => call[0] === 'send').length, 0);
+
+  const shifted = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/send 3 hello', isPrivate: true, chatType: 'private',
+  });
+  assert.match(shifted.text, /Sent to/);
+  assert.deepEqual(h.hostCalls.find((call) => call[0] === 'send'), ['send', 'ses_2', 'hello']);
+
+  const sessions = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/sessions', isPrivate: true, chatType: 'private',
+  });
+  assert.doesNotMatch(sessions.text, /ses_gone/);
+  assert.match(sessions.text, /ses_1/);
+  assert.match(sessions.text, /ses_2/);
+});
+
 test('/new starts a session with the task and routes the confirmation', async () => {
   const h = await makeHarness();
   h.store.setPrimaryChat(100);

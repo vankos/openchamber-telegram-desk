@@ -9,6 +9,7 @@ const path = require('node:path');
 const { Store } = require('../service/lib/store');
 const { createOutbox } = require('../service/lib/outbox');
 const { createSessionEvents, validateSessionEvent } = require('../service/lib/session-events');
+const { createAnswerEngine } = require('../service/lib/answers');
 const { silentLogger } = require('../service/lib/log');
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 15));
@@ -71,6 +72,7 @@ const makeHarness = async ({ notifySetting = 'active', rich = false } = {}) => {
     getSettings: () => ({ notifySetting }),
     clock: () => now,
   });
+  const answers = createAnswerEngine({ store, host, telegram, logger: silentLogger, clock: () => now });
   return {
     dir,
     store,
@@ -80,6 +82,7 @@ const makeHarness = async ({ notifySetting = 'active', rich = false } = {}) => {
     hostCalls,
     outbox,
     events,
+    answers,
     telegram,
     advance: (ms) => { now += ms; },
     now: () => now,
@@ -260,6 +263,105 @@ test('page questions are notices with a session route', async () => {
   assert.equal(h.sent.length, 1);
   assert.match(h.sent[0].text, /cannot be answered from a service/);
   assert.equal(h.store.messageRoute(100, 501).sessionId, 'ses_1');
+});
+
+test('session-deleted drops the session and closes its cards without touching routes', async () => {
+  const h = await makeHarness({ notifySetting: 'all' });
+  const question = baseEvent('question-asked', { question: { kind: 'form', id: 'frm_1' } });
+  question.content = {
+    type: 'question-asked',
+    sessionTitle: 'Fix parser',
+    ask: {
+      kind: 'form',
+      id: 'frm_1',
+      title: 'Pick a branch',
+      fields: [{
+        key: 'branch',
+        type: 'string',
+        title: 'Branch',
+        required: true,
+        options: [{ value: 'main', label: 'main' }],
+      }],
+    },
+  };
+  await h.events.handle(question);
+  const permission = baseEvent('permission-asked', { permission: { requestId: 'perm_1' } });
+  permission.content = {
+    type: 'permission-asked',
+    sessionTitle: 'Fix parser',
+    action: 'bash',
+    resources: ['git push'],
+    message: 'Push?',
+  };
+  await h.events.handle(permission);
+  const other = baseEvent('question-asked', {
+    session: { id: 'ses_2', parentId: null },
+    question: { kind: 'form', id: 'frm_2' },
+  });
+  other.content = {
+    type: 'question-asked',
+    sessionTitle: 'Other session',
+    ask: {
+      kind: 'form',
+      id: 'frm_2',
+      title: 'Keep me',
+      fields: [{ key: 'note', type: 'string', title: 'Note', required: true }],
+    },
+  };
+  await h.events.handle(other);
+  h.store.setLastSessionList(100, ['ses_1', 'ses_2']);
+  await settle();
+  await h.outbox.drain();
+
+  const form = h.store.state.forms['ses_1:frm_1'];
+  const permissionEntry = h.store.state.permissions.perm_1;
+  assert.ok(form);
+  assert.ok(permissionEntry);
+  assert.equal(h.store.messageRoute(100, form.messageId).sessionId, 'ses_1');
+  assert.equal(h.store.messageRoute(100, permissionEntry.messageId).sessionId, 'ses_1');
+  assert.ok(h.store.state.sessionRegistry.ses_1);
+  assert.equal(h.store.isWatched('ses_1'), true);
+
+  const result = await h.events.handle(baseEvent('session-deleted'));
+  assert.equal(result.ok, true);
+
+  assert.equal(h.store.state.sessionRegistry.ses_1, undefined);
+  assert.equal(h.store.isWatched('ses_1'), false);
+  assert.ok(h.store.state.sessionRegistry.ses_2);
+  assert.equal(h.store.state.forms['ses_1:frm_1'].closed, true);
+  assert.equal(h.store.state.forms['ses_2:frm_2'].closed, false);
+  assert.equal(h.store.state.permissions.perm_1.closed, true);
+  assert.equal(h.store.messageRoute(100, form.messageId).sessionId, 'ses_1');
+  assert.equal(h.store.messageRoute(100, permissionEntry.messageId).sessionId, 'ses_1');
+  assert.deepEqual(h.store.lastSessionList(100), [null, 'ses_2']);
+  assert.equal(h.store.state.outbox.filter((item) => item.sessionId === 'ses_1').length, 0);
+  assert.ok(h.edits.some((edit) => edit.messageId === form.messageId && /deleted in OpenChamber/.test(edit.text)));
+  assert.ok(h.edits.some((edit) => edit.messageId === permissionEntry.messageId && /deleted in OpenChamber/.test(edit.text)));
+
+  // Old buttons stay recognisable but close as stale; no answer reaches the host.
+  const formRef = Object.entries(h.store.state.refs)
+    .find(([, payload]) => payload.kind === 'question' && payload.sessionId === 'ses_1');
+  assert.ok(formRef);
+  const press = await h.answers.chooseOption(formRef[1]);
+  assert.equal(press.ok, false);
+  assert.equal(press.stale, true);
+  const permissionPress = await h.answers.answerPermission(permissionEntry, 'allow');
+  assert.equal(permissionPress.ok, false);
+  assert.equal(permissionPress.stale, true);
+  assert.equal(h.hostCalls.filter((call) => String(call[0]).startsWith('answer')).length, 0);
+
+  const counts = h.events.pendingCounts();
+  assert.equal(counts.bySession.get('ses_1'), undefined);
+  assert.equal(counts.bySession.get('ses_2'), 1);
+});
+
+test('session-deleted for an unknown session is harmless', async () => {
+  const h = await makeHarness({ notifySetting: 'all' });
+  h.store.touchSession('ses_keep', { title: 'Keep' });
+  const result = await h.events.handle(baseEvent('session-deleted'));
+  assert.equal(result.ok, true);
+  assert.equal(h.store.state.sessionRegistry.ses_1, undefined);
+  assert.equal(h.store.state.sessionRegistry.ses_keep.title, 'Keep');
 });
 
 test('pending counts group questions and permissions by session', async () => {

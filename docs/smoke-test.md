@@ -76,6 +76,16 @@ If the agent opens an answerable page:
 6. Answer the same request in OpenChamber first, then press the stale Telegram button.
    Expected: the card says the request was already settled; no second answer.
 
+### Session deletion
+
+1. Use a disposable session with an open question or permission card, then delete it in
+   OpenChamber.
+2. Expected: the session disappears from `/sessions` immediately, and the card edits to
+   “The session was deleted in OpenChamber.”
+3. Press the old button. Expected: no answer is sent and the host is not called.
+4. Reply to the old card. Expected: a clear “Session not found” error; the text is not
+   routed to another session.
+
 ## 4. Turn notifications
 
 1. Keep the default `all` mode and let any top-level session finish.

@@ -406,6 +406,11 @@ const createDeskService = ({
       sendJson(res, 200, getStatus());
       return;
     }
+    if (pathname === '/sessions' && method === 'GET') {
+      const sessions = await commands.listSessions({ withStatus: true, limit: 25 });
+      sendJson(res, 200, { ok: true, sessions });
+      return;
+    }
     if (pathname === '/test' && method === 'POST') {
       const result = await handleTest();
       sendJson(res, result.status, result.body);

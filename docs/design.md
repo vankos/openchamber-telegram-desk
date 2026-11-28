@@ -17,7 +17,7 @@ here patches OpenChamber or OpenCode.
 
 | Contract | What it gives | Where used |
 |---|---|---|
-| `contributes.sessionEvents` | `question-asked`, `permission-asked`, `turn-finished`, `turn-failed`, `turn-started`, `session-created`; `content: true` adds the transcript fields | Every card and notification |
+| `contributes.sessionEvents` | `question-asked`, `permission-asked`, `turn-finished`, `turn-failed`, `turn-started`, `session-created`, `session-deleted`; `content: true` adds the transcript fields | Every card and notification; deletion cleanup |
 | `question-asked` content | `ask.kind` (`form` or `page`), form `id`, `title`, `fields[]` with `key/type/title/description/required/options/custom/when` | Form cards and answers |
 | `permission-asked` content | `action`, `resources[]`, `message` | Allow/Deny cards |
 | `turn-finished` / `turn-failed` content | `sessionTitle`, `reply` (64k cap), `replyTruncated`, or `error { type, message }` | Full turn notices (rich message or parts), error cards |
@@ -58,7 +58,8 @@ Telegram Bot API  ◄──────────────┐
 │         │ host events                             ▼          │
 │  ┌──────┴───────────────────────────────────────────────┐    │
 │  │ Telegram Desk service (Node, 127.0.0.1)              │    │
-│  │  HTTP: /health /status /pair /test /session-events   │    │
+│  │  HTTP: /health /status /sessions /pair /test         │    │
+│  │  /session-events                                     │    │
 │  │  poller ── outbox ── command router ── form engine   │    │
 │  │  state.json in OPENCHAMBER_SERVICE_DATA_DIR          │    │
 │  └──────┬───────────────────────────────┬───────────────┘    │
@@ -111,6 +112,7 @@ The panel never sees the bot token. It calls the service through the host's
     "ses_…": { "title": "…", "parentId": null, "directory": "/repo", "status": "busy", "updatedAt": 0 }
   },
   "watchedSessions": { "ses_…": 0 },
+  "lastSessionLists": { "chatId": ["ses_…", null] }, // /sessions indexes; null keeps a deleted slot
   "preferences": { "notifyMode": null },
   "outbox": [
     { "id": "…", "eventId": "evt_…", "chatId": 0, "text": "…", "keyboard": [], "sessionId": "ses_…", "attempts": 0, "nextAt": 0 }
@@ -134,6 +136,13 @@ the underlying request is still open. Refs are removed with their form/permissio
 - `processedCallbacks` (3 days), `seenEvents` (7 days), `seenUpdates` (1 day) are bounded.
 - `recentEvents` keeps the last 40 metadata records for the panel and `/digest`.
 - `outbox` is capped at 100 items; old items are dropped with a recorded failure.
+- `session-deleted` removes the session from `sessionRegistry` and `watchedSessions` and
+  drops its queued outbox items, so `/sessions` stops listing it at once. Open forms and
+  permissions for that session are closed with a note, but their state, refs and message
+  routes stay: an old button press is a stale no-op, and an old reply still resolves to
+  that session (the host answers “Session not found”) instead of being sent elsewhere.
+  Last `/sessions` indexes keep their positions with a `null` hole, so an old
+  `/send <number>` cannot silently address a different session.
 
 ## 4. Flows
 

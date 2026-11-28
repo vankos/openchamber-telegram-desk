@@ -306,6 +306,34 @@ const createSessionEvents = ({
     enqueue(request, { ...card, kind: 'page' });
   };
 
+  const SESSION_DELETED_NOTE = 'The session was deleted in OpenChamber.';
+
+  const closeSessionCards = async (sessionId) => {
+    const closing = [];
+    for (const form of Object.values(store.state.forms)) {
+      if (form?.sessionId === sessionId && !form.closed) closing.push(closeForm(form, SESSION_DELETED_NOTE));
+    }
+    for (const permission of Object.values(store.state.permissions)) {
+      if (permission?.sessionId === sessionId && !permission.closed) closing.push(closePermission(permission, SESSION_DELETED_NOTE));
+    }
+    // The host waits 10 s for an event answer; edit the cards together rather than one
+    // Telegram round-trip at a time. Each edit has its own 6 s timeout.
+    await Promise.allSettled(closing);
+  };
+
+  const handleSessionDeleted = async (request) => {
+    const sessionId = request.event.session.id;
+    // Remove it from /sessions at once. Queued cards are dropped first: they belong to a
+    // session that no longer exists and must not arrive after the deletion.
+    store.forgetSession(sessionId);
+    store.state.outbox = store.state.outbox.filter((item) => item.sessionId !== sessionId);
+    store.touch();
+    // Open cards stay in state (their refs and message routes are untouched) but close
+    // with a note, so an old button press is a clear no-op instead of a failed answer.
+    await closeSessionCards(sessionId);
+    markDelivery(request, 'ignored', 'session removed');
+  };
+
   const handle = async (body) => {
     const request = validateSessionEvent(body);
     if (!request) return { ok: false, error: 'invalid session event' };
@@ -313,7 +341,8 @@ const createSessionEvents = ({
     store.markEventSeen(request.event.id);
     store.bump('events');
     recordEvent(request);
-    upsertSession(request);
+    // A deleted session must not be touched into the registry by this event.
+    if (request.event.type !== 'session-deleted') upsertSession(request);
 
     try {
       switch (request.event.type) {
@@ -340,10 +369,12 @@ const createSessionEvents = ({
         case 'turn-failed':
           handleTurnFailed(request);
           break;
+        case 'session-deleted':
+          await handleSessionDeleted(request);
+          break;
         case 'turn-started':
         case 'session-created':
         case 'session-archived':
-        case 'session-deleted':
           markDelivery(request, 'ignored');
           break;
         default:
@@ -390,6 +421,7 @@ const createSessionEvents = ({
           text: rendered.text,
           plain: rendered.plain,
           keyboard: [],
+          timeoutMs: 6000,
         });
       } catch (error) {
         logger?.debug('Could not edit a closed form card', { code: error?.code });
@@ -421,6 +453,7 @@ const createSessionEvents = ({
           text,
           plain: `Permission request\n${note}`,
           keyboard: [],
+          timeoutMs: 6000,
         });
       } catch (error) {
         logger?.debug('Could not edit a permission card', { code: error?.code });

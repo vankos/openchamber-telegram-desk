@@ -268,6 +268,25 @@ class Store {
     this.touch();
   }
 
+  /**
+   * Drop a session that OpenChamber reported as deleted. Registry and watch entries are
+   * removed; message routes stay so old replies still resolve to the session (and fail
+   * clearly in the host) instead of being sent somewhere else. Last-list indexes keep
+   * their positions with a null hole, so an old `/send <number>` cannot silently point
+   * at a different session.
+   */
+  forgetSession(sessionId) {
+    if (!sessionId) return;
+    delete this.state.sessionRegistry[sessionId];
+    delete this.state.watchedSessions[sessionId];
+    for (const [chatId, ids] of Object.entries(this.state.lastSessionLists)) {
+      if (Array.isArray(ids) && ids.includes(sessionId)) {
+        this.state.lastSessionLists[chatId] = ids.map((id) => (id === sessionId ? null : id));
+      }
+    }
+    this.touch();
+  }
+
   isWatched(sessionId, ttlMs = DAY) {
     const at = this.state.watchedSessions[sessionId];
     return Number.isFinite(at) && this.clock() - at <= ttlMs;

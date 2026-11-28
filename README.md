@@ -5,9 +5,13 @@ session arrive as Telegram cards with buttons; the answer goes back to the sessi
 asked. A small command surface covers `/new`, `/status`, `/sessions`, `/send`, `/stop`,
 `/digest`, and replying to any bot message sends the text to its session.
 
-Status: v1.2.0. The design and the SDK constraints are in
+Status: v1.2.1. The design and the SDK constraints are in
 [`docs/design.md`](docs/design.md). The real-token checklist is in
 [`docs/smoke-test.md`](docs/smoke-test.md).
+
+Upgrading from 1.2.0 asks for one re-approval in **Settings → Extensions**: the event
+subscription now includes `session-deleted`, and OpenChamber treats a changed subscription
+scope as a new approval.
 
 ## What you get
 
@@ -23,6 +27,10 @@ Status: v1.2.0. The design and the SDK constraints are in
   Telegram, or `off`.
 - **Reply routing.** Reply to any bot message and the text goes to the session it belongs
   to. Replying to an open question card answers its text field instead.
+- **Session cleanup.** A session deleted in OpenChamber disappears from `/sessions`
+  immediately. Its open question and permission cards close with a note, queued cards are
+  dropped, and an old reply still resolves to that session so the host's “Session not
+  found” answer is shown instead of sending the text elsewhere.
 - **Commands.** `/new`, `/status`, `/sessions`, `/send`, `/stop`, `/digest`, `/help`.
 - **Pairing and allowlist.** A short-lived code from the panel pairs a private chat. A
   numeric allowlist in the integration settings is the second way in.
@@ -190,7 +198,7 @@ to delete its data folder.
 ```bash
 npm install
 npm run build     # rebuilds panel/main.js from panel/src/main.mjs
-npm test          # node:test unit + smoke tests
+npm test          # node:test unit + smoke tests (109 tests)
 npm run check     # manifest, packaged files, IIFE panel
 ```
 

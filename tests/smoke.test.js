@@ -44,6 +44,19 @@ const questionEvent = () => ({
   },
 });
 
+const sessionDeletedEvent = () => ({
+  v: 1,
+  requestId: 'req_d1',
+  event: {
+    id: 'evt_d1',
+    type: 'session-deleted',
+    at: 3_000,
+    session: { id: 'ses_1', parentId: null },
+    project: { directory: '/repo' },
+    linked: [],
+  },
+});
+
 const permissionEvent = () => ({
   v: 1,
   requestId: 'req_p1',
@@ -125,7 +138,7 @@ const createHarness = async (dataDir) => {
   const { port } = await service.start();
   await service.refreshSettings({ force: true });
   await settle(20);
-  return { service, port, sent, edits, callbackAnswers, hostCalls, logs, telegram };
+  return { service, port, sent, edits, callbackAnswers, hostCalls, logs, telegram, host };
 };
 
 const api = async (port, method, route, body = undefined, token = SERVICE_TOKEN) => {
@@ -414,6 +427,89 @@ test('smoke: /new starts a session and routes its confirmation', async () => {
     const sent = h.hostCalls.find((call) => call[0] === 'send');
     assert.deepEqual(sent, ['send', 'ses_new', 'one more thing']);
     assert.equal(h.service.store.state.offset, 202);
+  } finally {
+    await h.service.stop();
+  }
+});
+
+test('smoke: session-deleted leaves /sessions, closes cards and keeps replies clear', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'telegram-desk-smoke-'));
+  const h = await createHarness(dir);
+  try {
+    assert.equal((await api(h.port, 'POST', '/session-events', questionEvent())).body.ok, true);
+    assert.equal((await api(h.port, 'POST', '/session-events', permissionEvent())).body.ok, true);
+    await settle();
+    await h.service.outbox.drain();
+    assert.equal(h.sent.length, 2);
+    const formCallback = h.sent[0].keyboard[0][0].callback_data;
+    const formRoute = h.service.store.messageRoute(100, 501);
+    assert.equal(formRoute.sessionId, 'ses_1');
+    assert.equal(h.service.store.state.forms['ses_1:frm_1'].messageId, 501);
+    assert.equal(h.service.store.state.permissions.perm_1.messageId, 502);
+
+    const before = await api(h.port, 'GET', '/sessions');
+    assert.equal(before.status, 200);
+    assert.ok(before.body.sessions.some((session) => session.id === 'ses_1'));
+
+    const deleted = await api(h.port, 'POST', '/session-events', sessionDeletedEvent());
+    assert.equal(deleted.status, 200);
+    assert.equal(deleted.body.ok, true);
+
+    const after = await api(h.port, 'GET', '/sessions');
+    assert.equal(after.status, 200);
+    assert.ok(!after.body.sessions.some((session) => session.id === 'ses_1'));
+    assert.ok(after.body.sessions.some((session) => session.id === 'ses_seed'));
+    assert.equal(h.service.store.state.sessionRegistry.ses_1, undefined);
+    assert.equal(h.service.store.state.forms['ses_1:frm_1'].closed, true);
+    assert.equal(h.service.store.state.permissions.perm_1.closed, true);
+    assert.equal(h.service.store.messageRoute(100, 501).sessionId, 'ses_1');
+    assert.equal(h.service.store.messageRoute(100, 502).sessionId, 'ses_1');
+    assert.ok(h.edits.some((edit) => edit.messageId === 501 && /deleted in OpenChamber/.test(edit.text)));
+    assert.ok(h.edits.some((edit) => edit.messageId === 502 && /deleted in OpenChamber/.test(edit.text)));
+
+    const commandSessions = await h.service.commands.handleMessage({
+      chatId: 100, userId: 100, text: '/sessions', isPrivate: true, chatType: 'private',
+    });
+    assert.doesNotMatch(commandSessions.text, /ses_1/);
+    assert.match(commandSessions.text, /ses_seed/);
+
+    // A stale button press closes quietly and never reaches the host.
+    const answersBefore = h.hostCalls.filter((call) => String(call[0]).startsWith('answer')).length;
+    await h.service.handleTelegramUpdate({
+      update_id: 300,
+      callback_query: {
+        id: 'cb-deleted-form',
+        from: { id: 100, is_bot: false },
+        data: formCallback,
+        message: { message_id: 501, chat: { id: 100, type: 'private' } },
+      },
+    });
+    assert.equal(h.hostCalls.filter((call) => String(call[0]).startsWith('answer')).length, answersBefore);
+    assert.ok(h.callbackAnswers.some((item) => item.callbackQueryId === 'cb-deleted-form'));
+
+    // Replying to an old card still resolves to the deleted session and reports the host's
+    // answer instead of sending the text to another session.
+    h.host.sessions.send = async () => {
+      const error = new Error('Session not found');
+      error.status = 404;
+      error.code = 'NOT_FOUND';
+      throw error;
+    };
+    await h.service.handleTelegramUpdate({
+      update_id: 301,
+      message: {
+        message_id: 20,
+        from: { id: 100, is_bot: false },
+        chat: { id: 100, type: 'private' },
+        text: 'continue please',
+        reply_to_message: {
+          message_id: 501,
+          from: { id: 1, is_bot: true, username: 'desk_bot' },
+        },
+      },
+    });
+    assert.ok(h.sent.some((message) => /Session not found/.test(message.text)));
+    assert.equal(h.hostCalls.filter((call) => call[0] === 'send').length, 0);
   } finally {
     await h.service.stop();
   }
