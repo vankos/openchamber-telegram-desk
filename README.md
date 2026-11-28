@@ -1,20 +1,28 @@
 # Telegram Desk for OpenChamber
 
-Two-way Telegram control for OpenCode sessions. Questions and permission requests from any
-session arrive as Telegram cards with buttons; the answer goes back to the session that
-asked. A small command surface covers `/new`, `/status`, `/sessions`, `/send`, `/stop`,
-`/digest`, and replying to any bot message sends the text to its session.
+Two-way Telegram control for OpenCode sessions. Questions and permission requests arrive as
+Telegram cards with buttons; the answer goes back to the session that asked. A small command
+surface covers `/new`, `/status`, `/sessions`, `/send`, `/stop`, `/digest`, and replying to
+any bot message sends the text to its session. Pick one **Telegram lead** session and only
+that session can reach Telegram.
 
-Status: v1.2.1. The design and the SDK constraints are in
+Status: v1.3.0. The design and the SDK constraints are in
 [`docs/design.md`](docs/design.md). The real-token checklist is in
 [`docs/smoke-test.md`](docs/smoke-test.md).
 
-Upgrading from 1.2.0 asks for one re-approval in **Settings → Extensions**: the event
-subscription now includes `session-deleted`, and OpenChamber treats a changed subscription
-scope as a new approval.
+Upgrading from 1.2.x asks for one re-approval in **Settings → Extensions**: the event
+subscription now includes `session-archived` (and `session-deleted` since 1.2.1), and
+OpenChamber treats a changed subscription scope as a new approval. No new capability is
+requested.
 
 ## What you get
 
+- **One Telegram lead.** Choose a session in the panel's **Telegram lead** card. Only that
+  session's questions, permissions, finished turns and failures reach Telegram; every other
+  session is counted as ignored and sends nothing. Commands and replies target the lead,
+  `/new` is blocked, and the binding survives restarts. If the lead is deleted or archived,
+  delivery pauses and the primary chat asks for a new lead; nothing is selected automatically.
+  With no lead, the notification mode applies to every session, as before.
 - **Question cards.** A `question-asked` form becomes a message with option buttons. Single
   choice questions answer on the first press; multi-field forms collect answers and show a
   Submit button. Text, number, boolean and multiselect fields are supported.
@@ -82,15 +90,15 @@ secret and do not sync or commit it.
 | Command | What it does |
 |---|---|
 | `/start [code]` | Pair a private chat, or explain how to pair |
-| `/status` | Sessions grouped as waiting / busy / idle, with pending-answer counts |
-| `/sessions` | Recent sessions with indexes, IDs, projects and relative update time |
-| `/new <task>` | Start a new session with `sessions.start` and send the task |
-| `/send <session> <text>` | Send a message with `sessions.send` |
-| `/stop <session>` | Stop the running turn with `sessions.stop` |
+| `/status` | Sessions grouped as waiting / busy / idle, with pending-answer counts; only the lead when one is set |
+| `/sessions` | Recent sessions with indexes, IDs, projects and relative update time; only the lead when one is set |
+| `/new <task>` | Start a new session with `sessions.start` and send the task; blocked when a lead is set |
+| `/send <session> <text>` | Send a message with `sessions.send`; `/send <text>` sends to the lead |
+| `/stop [session]` | Stop the running turn with `sessions.stop`; no argument stops the lead |
 | `/digest` | Counts, pending answers, and turns since the last digest in this chat |
 | `/help` | The command list |
 | `/unpair` | Remove this chat from the paired list (settings allowlist can still allow it) |
-| Reply to a bot message | Send the text to that message's session, or answer an open form field |
+| Reply to a bot message | Send the text to that message's session, or answer an open form field; with a lead, text goes to the lead and other form cards are stale |
 
 `<session>` accepts:
 
@@ -111,6 +119,23 @@ notifications` field in Settings → Integrations is the default used before the
 one. `/new`, `/status`, `/sessions`, `/send` and `/stop` work from any allowed chat. Event cards are sent
 to the **primary chat** (the first paired chat, or the first ID in the settings allowlist);
 the panel shows which chat that is.
+
+**Telegram lead.** The panel card lists sessions from the service's `/sessions` view (the
+approved OpenCode read plus the event registry) and binds the chosen one with **Use as
+Telegram lead**. The service checks that the session exists and is top-level before saving
+`leadSessionId`, its title and `setAt` in state. While a lead is set:
+
+- only its `question-asked`, `permission-asked`, `turn-finished` and `turn-failed` events
+  are delivered; other sessions increment `stats.ignored` and create no cards, refs,
+  forms, permissions or queued messages;
+- `/status`, `/sessions`, `/send`, `/stop` and `/digest` target the lead; `/new` explains
+  that the task should be sent to the lead;
+- a reply to any bot message goes to the lead; cards from other sessions close as stale and
+  their buttons are never answered.
+
+Deleting or archiving the lead drops its queued cards, clears the binding, pauses delivery
+and sends the primary chat a notice to choose a new lead. The pause and the binding both
+survive restarts; **Clear lead** in the panel returns to the mode-wide behaviour.
 
 ## How a question is answered
 
@@ -157,8 +182,9 @@ press does nothing else.
 
 State is `OPENCHAMBER_SERVICE_DATA_DIR/state.json`, written atomically with mode 0600. It
 contains the Telegram offset, message→session/form routes, opaque callback refs, open forms
-and permissions, the paired IDs, notification preference, recent event metadata and the
-outbox. It contains no token and no full transcript.
+and permissions, the paired IDs, notification preference, the lead binding
+(`leadSessionId`, title, `setAt`, and the pause left by a removed lead), recent event
+metadata and the outbox. It contains no token and no full transcript.
 
 After a service or OpenChamber restart the offset resumes, existing buttons keep working,
 and undelivered cards are retried from the outbox. Session events are delivered by
@@ -175,8 +201,11 @@ to delete its data folder.
 - **Event content is at most once.** A turn that fails while the service is down is not
   replayed by OpenChamber. The outbox helps with outbound sends, not with host events.
 - **OpenCode session list is optional.** It needs the separately approved `opencode` grant.
-  Without it, `/status` and `/sessions` only know sessions observed in events since the
-  service started.
+  Without it, `/status`, `/sessions` and the lead picker only know sessions observed in
+  events since the service started.
+- **The lead is one session, not one project.** A subagent session cannot be chosen. If the
+  service is down when the lead is deleted, the deletion event is not replayed; the stale
+  binding reports the last known state until a person binds another lead or clears it.
 - **`/new` needs OpenChamber 2.8 or newer** and a model selected for new sessions. It starts
   in the directory of the most recent top-level session; open a project or a session in
   OpenChamber first.
@@ -198,7 +227,7 @@ to delete its data folder.
 ```bash
 npm install
 npm run build     # rebuilds panel/main.js from panel/src/main.mjs
-npm test          # node:test unit + smoke tests (109 tests)
+npm test          # node:test unit + smoke tests (118 tests)
 npm run check     # manifest, packaged files, IIFE panel
 ```
 

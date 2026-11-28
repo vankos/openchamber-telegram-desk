@@ -9,6 +9,7 @@ const {
   formatTurnFailed,
   formatQuestionUnavailable,
   formatPageQuestion,
+  formatLeadRemoved,
 } = require('./format');
 const {
   createFormState,
@@ -130,12 +131,14 @@ const createSessionEvents = ({
           : (event.type === 'question-asked' || event.type === 'permission-asked') ? 'waiting'
             : undefined;
     const current = store.state.sessionRegistry[event.session.id] ?? {};
+    const title = request.content?.sessionTitle ?? current.title ?? null;
     store.touchSession(event.session.id, {
-      title: request.content?.sessionTitle ?? current.title ?? null,
+      title,
       parentId: event.session.parentId,
       directory: event.project.directory,
       ...(status ? { status } : {}),
     });
+    if (store.state.leadSessionId === event.session.id && title) store.setLeadTitle(title);
   };
 
   const handleQuestionForm = async (request, ask) => {
@@ -307,22 +310,58 @@ const createSessionEvents = ({
   };
 
   const SESSION_DELETED_NOTE = 'The session was deleted in OpenChamber.';
+  const SESSION_ARCHIVED_NOTE = 'The session was archived in OpenChamber.';
+  const NOT_LEAD_NOTE = 'This session is not the Telegram lead.';
 
-  const closeSessionCards = async (sessionId) => {
+  const closeSessionCards = async (sessionId, note = SESSION_DELETED_NOTE) => {
     const closing = [];
     for (const form of Object.values(store.state.forms)) {
-      if (form?.sessionId === sessionId && !form.closed) closing.push(closeForm(form, SESSION_DELETED_NOTE));
+      if (form?.sessionId === sessionId && !form.closed) closing.push(closeForm(form, note));
     }
     for (const permission of Object.values(store.state.permissions)) {
-      if (permission?.sessionId === sessionId && !permission.closed) closing.push(closePermission(permission, SESSION_DELETED_NOTE));
+      if (permission?.sessionId === sessionId && !permission.closed) closing.push(closePermission(permission, note));
     }
     // The host waits 10 s for an event answer; edit the cards together rather than one
     // Telegram round-trip at a time. Each edit has its own 6 s timeout.
     await Promise.allSettled(closing);
   };
 
+  /**
+   * The bound lead is gone. Drop its queued cards, close its open cards, clear the
+   * binding and tell the primary chat to choose a new lead. Delivery stays paused
+   * until someone picks another session; nothing is auto-selected.
+   */
+  const removeLead = async (request, reason) => {
+    const sessionId = request.event.session.id;
+    const previous = store.leadSession();
+    store.forgetSession(sessionId);
+    store.state.outbox = store.state.outbox.filter((item) => item.sessionId !== sessionId);
+    store.touch();
+    await closeSessionCards(sessionId, reason === 'archived' ? SESSION_ARCHIVED_NOTE : SESSION_DELETED_NOTE);
+    store.clearLeadSession({ paused: true });
+    const chatId = primary();
+    if (!chatId) {
+      markDelivery(request, 'failed', 'no primary chat');
+      return;
+    }
+    const card = formatLeadRemoved({
+      title: previous.title,
+      sessionId,
+      reason,
+    });
+    outbox.enqueue({
+      eventId: request.event.id,
+      chatId,
+      text: card.text,
+      plain: card.plain,
+      kind: 'event',
+    });
+    markDelivery(request, 'queued');
+  };
+
   const handleSessionDeleted = async (request) => {
     const sessionId = request.event.session.id;
+    const wasLead = store.state.leadSessionId === sessionId;
     // Remove it from /sessions at once. Queued cards are dropped first: they belong to a
     // session that no longer exists and must not arrive after the deletion.
     store.forgetSession(sessionId);
@@ -331,7 +370,48 @@ const createSessionEvents = ({
     // Open cards stay in state (their refs and message routes are untouched) but close
     // with a note, so an old button press is a clear no-op instead of a failed answer.
     await closeSessionCards(sessionId);
+    if (wasLead) {
+      await removeLead(request, 'deleted');
+      return;
+    }
     markDelivery(request, 'ignored', 'session removed');
+  };
+
+  const handleSessionArchived = async (request) => {
+    const sessionId = request.event.session.id;
+    if (store.state.leadSessionId !== sessionId) {
+      markDelivery(request, 'ignored');
+      return;
+    }
+    await removeLead(request, 'archived');
+  };
+
+  /**
+   * Keep delivery consistent with the current binding: queued cards for other
+   * sessions are dropped, and (on a fresh bind) their open cards close with a note.
+   * Called after loading state and after the panel binds a lead.
+   */
+  const enforceLead = async ({ closeCards = false } = {}) => {
+    const leadSessionId = store.state.leadSessionId;
+    if (!leadSessionId) return 0;
+    const before = store.state.outbox.length;
+    store.state.outbox = store.state.outbox.filter((item) => !item.sessionId || item.sessionId === leadSessionId);
+    if (store.state.outbox.length !== before) store.touch();
+    if (closeCards) {
+      const closing = [];
+      for (const form of Object.values(store.state.forms)) {
+        if (form?.sessionId && form.sessionId !== leadSessionId && !form.closed) {
+          closing.push(closeForm(form, NOT_LEAD_NOTE));
+        }
+      }
+      for (const permission of Object.values(store.state.permissions)) {
+        if (permission?.sessionId && permission.sessionId !== leadSessionId && !permission.closed) {
+          closing.push(closePermission(permission, NOT_LEAD_NOTE));
+        }
+      }
+      await Promise.allSettled(closing);
+    }
+    return before - store.state.outbox.length;
   };
 
   const handle = async (body) => {
@@ -341,6 +421,20 @@ const createSessionEvents = ({
     store.markEventSeen(request.event.id);
     store.bump('events');
     recordEvent(request);
+
+    // With a lead, everything from another session is ignored before any handler can
+    // create a form, permission, ref, outbox item or registry entry. A paused binding
+    // (the lead was deleted or archived) ignores every event until a new lead is chosen.
+    const leadSessionId = store.state.leadSessionId;
+    const paused = !leadSessionId && store.state.leadPaused === true;
+    if (paused || (leadSessionId && request.event.session.id !== leadSessionId)) {
+      const detail = paused ? 'lead removed, delivery paused' : 'not the Telegram lead';
+      markDelivery(request, 'ignored', detail);
+      store.bump('ignored');
+      await store.flush();
+      return { ok: true, ignored: true };
+    }
+
     // A deleted session must not be touched into the registry by this event.
     if (request.event.type !== 'session-deleted') upsertSession(request);
 
@@ -372,9 +466,11 @@ const createSessionEvents = ({
         case 'session-deleted':
           await handleSessionDeleted(request);
           break;
+        case 'session-archived':
+          await handleSessionArchived(request);
+          break;
         case 'turn-started':
         case 'session-created':
-        case 'session-archived':
           markDelivery(request, 'ignored');
           break;
         default:
@@ -390,17 +486,19 @@ const createSessionEvents = ({
     return { ok: true };
   };
 
-  const pendingCounts = () => {
+  const pendingCounts = (sessionId = null) => {
     const bySession = new Map();
     let questions = 0;
     let permissions = 0;
     for (const form of Object.values(store.state.forms)) {
       if (!form || form.closed) continue;
+      if (sessionId !== null && form.sessionId !== sessionId) continue;
       questions += 1;
       bySession.set(form.sessionId, (bySession.get(form.sessionId) ?? 0) + 1);
     }
     for (const permission of Object.values(store.state.permissions)) {
       if (!permission || permission.closed) continue;
+      if (sessionId !== null && permission.sessionId !== sessionId) continue;
       permissions += 1;
       bySession.set(permission.sessionId, (bySession.get(permission.sessionId) ?? 0) + 1);
     }
@@ -465,6 +563,7 @@ const createSessionEvents = ({
   return {
     handle,
     pendingCounts,
+    enforceLead,
     closeForm,
     closeFormsForSession,
     findPermissionByRef,

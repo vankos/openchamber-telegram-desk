@@ -124,3 +124,36 @@ test('last session list is persisted per chat', async () => {
   await reloaded.load();
   assert.deepEqual(reloaded.lastSessionList(5), ['a', 'b', 'c']);
 });
+
+test('the lead session, its title and setAt survive a reload', async () => {
+  let now = 1_000;
+  const { dir, store } = await makeStore(() => now);
+  store.setLeadSession({ sessionId: 'ses_lead', title: 'Lead session' });
+  assert.deepEqual(store.leadSession(), {
+    sessionId: 'ses_lead',
+    title: 'Lead session',
+    setAt: 1_000,
+    paused: false,
+  });
+  await store.flush();
+
+  now = 5_000;
+  const reloaded = new Store({ dir, clock: () => now });
+  await reloaded.load();
+  assert.deepEqual(reloaded.leadSession(), {
+    sessionId: 'ses_lead',
+    title: 'Lead session',
+    setAt: 1_000,
+    paused: false,
+  });
+  reloaded.setLeadTitle('Renamed lead');
+  assert.equal(reloaded.leadSession().title, 'Renamed lead');
+  reloaded.clearLeadSession({ paused: true });
+  assert.deepEqual(reloaded.leadSession(), { sessionId: null, title: null, setAt: null, paused: true });
+  await reloaded.flush();
+
+  const paused = new Store({ dir, clock: () => now });
+  await paused.load();
+  assert.equal(paused.state.leadSessionId, null);
+  assert.equal(paused.state.leadPaused, true);
+});

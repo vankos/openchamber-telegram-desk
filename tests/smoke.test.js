@@ -432,6 +432,213 @@ test('smoke: /new starts a session and routes its confirmation', async () => {
   }
 });
 
+test('smoke: a single lead gates delivery and commands, survives restart and leaks no token', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'telegram-desk-smoke-'));
+  const h = await createHarness(dir);
+  const turnEvent = (sessionId, eventId, title, reply) => ({
+    v: 1,
+    requestId: `req_${eventId}`,
+    event: {
+      id: eventId,
+      type: 'turn-finished',
+      at: 4_000,
+      session: { id: sessionId, parentId: null },
+      project: { directory: '/repo' },
+      linked: [],
+    },
+    content: { type: 'turn-finished', sessionTitle: title, reply, replyTruncated: false },
+  });
+  try {
+    // Cards opened before any lead exists: binding a lead must close them as stale.
+    assert.equal((await api(h.port, 'POST', '/session-events', questionEvent())).body.ok, true);
+    assert.equal((await api(h.port, 'POST', '/session-events', permissionEvent())).body.ok, true);
+    await settle();
+    await h.service.outbox.drain();
+    assert.equal(h.sent.length, 2);
+    const oldCallback = h.sent[0].keyboard[0][0].callback_data;
+    const oldPermissionCallback = h.sent[1].keyboard[0][0].callback_data;
+
+    const bind = await api(h.port, 'POST', '/lead', { sessionId: 'ses_seed' });
+    assert.equal(bind.status, 200);
+    assert.equal(bind.body.lead.sessionId, 'ses_seed');
+    assert.equal(bind.body.lead.title, 'Seed project');
+    assert.equal(bind.body.lead.setAt, 1_000);
+    assert.equal(bind.body.lead.paused, false);
+    assert.equal(h.service.store.state.forms['ses_1:frm_1'].closed, true);
+    assert.equal(h.service.store.state.permissions.perm_1.closed, true);
+    assert.ok(h.edits.some((edit) => edit.messageId === 501 && /not the Telegram lead/.test(edit.text)));
+    assert.ok(h.edits.some((edit) => edit.messageId === 502 && /not the Telegram lead/.test(edit.text)));
+
+    const answersBefore = h.hostCalls.filter((call) => String(call[0]).startsWith('answer')).length;
+    for (const [callbackId, data, messageId] of [
+      ['cb-old-form', oldCallback, 501],
+      ['cb-old-permission', oldPermissionCallback, 502],
+    ]) {
+      await h.service.handleTelegramUpdate({
+        update_id: callbackId === 'cb-old-form' ? 400 : 401,
+        callback_query: {
+          id: callbackId,
+          from: { id: 100, is_bot: false },
+          data,
+          message: { message_id: messageId, chat: { id: 100, type: 'private' } },
+        },
+      });
+    }
+    await settle();
+    assert.equal(h.hostCalls.filter((call) => String(call[0]).startsWith('answer')).length, answersBefore);
+    for (const callbackId of ['cb-old-form', 'cb-old-permission']) {
+      assert.ok(h.callbackAnswers.some((item) => item.callbackQueryId === callbackId
+        && /not the Telegram lead/.test(item.text)));
+    }
+
+    // Non-lead events do not send and do not create registry entries.
+    const other = turnEvent('ses_other', 'evt_other_turn', 'Other session', 'other reply');
+    assert.equal((await api(h.port, 'POST', '/session-events', other)).body.ok, true);
+    await settle();
+    await h.service.outbox.drain();
+    assert.equal(h.sent.length, 2);
+    assert.equal(h.service.store.state.sessionRegistry.ses_other, undefined);
+    assert.equal(h.service.store.state.stats.ignored, 1);
+    assert.equal((await api(h.port, 'POST', '/notify-mode', { mode: 'all' })).body.ok, true);
+
+    const leadTurn = turnEvent('ses_seed', 'evt_lead_turn', 'Seed project', 'lead reply');
+    assert.equal((await api(h.port, 'POST', '/session-events', leadTurn)).body.ok, true);
+    await settle();
+    await h.service.outbox.drain();
+    assert.equal(h.sent.length, 3);
+    assert.match(h.sent[2].text, /Seed project/);
+
+    const status = await h.service.commands.handleMessage({
+      chatId: 100, userId: 100, text: '/status', isPrivate: true, chatType: 'private',
+    });
+    assert.match(status.text, /Seed project/);
+    assert.doesNotMatch(status.text, /Fix parser/);
+    assert.doesNotMatch(status.text, /ses_other/);
+    const sessions = await h.service.commands.handleMessage({
+      chatId: 100, userId: 100, text: '/sessions', isPrivate: true, chatType: 'private',
+    });
+    assert.match(sessions.text, /ses_seed/);
+    assert.doesNotMatch(sessions.text, /Fix parser/);
+    assert.deepEqual(h.service.store.lastSessionList(100), ['ses_seed']);
+
+    const blocked = await h.service.commands.handleMessage({
+      chatId: 100, userId: 100, text: '/new do something else', isPrivate: true, chatType: 'private',
+    });
+    assert.match(blocked.text, /Telegram lead/);
+    assert.equal(h.hostCalls.filter((call) => call[0] === 'start').length, 0);
+
+    const sentByDefault = await h.service.commands.handleMessage({
+      chatId: 100, userId: 100, text: '/send continue here', isPrivate: true, chatType: 'private',
+    });
+    assert.match(sentByDefault.text, /Sent to/);
+    assert.deepEqual(h.hostCalls.find((call) => call[0] === 'send'), ['send', 'ses_seed', 'continue here']);
+
+    const stopped = await h.service.commands.handleMessage({
+      chatId: 100, userId: 100, text: '/stop', isPrivate: true, chatType: 'private',
+    });
+    assert.match(stopped.text, /Stopped/);
+    assert.deepEqual(h.hostCalls.find((call) => call[0] === 'stop'), ['stop', 'ses_seed']);
+
+    h.service.store.recordMessage(100, 900, {
+      sessionId: 'ses_1', sessionTitle: 'Fix parser', kind: 'finish',
+    });
+    const reply = await h.service.commands.handleMessage({
+      chatId: 100, userId: 100, text: 'reply to the lead', isPrivate: true, chatType: 'private', replyToMessageId: 900,
+    });
+    assert.match(reply.text, /Sent to/);
+    assert.deepEqual(h.hostCalls.filter((call) => call[0] === 'send').at(-1), ['send', 'ses_seed', 'reply to the lead']);
+
+    // Panel status exposes the lead and only its pending counts.
+    h.service.store.state.forms['ses_seed:frm_pending'] = { sessionId: 'ses_seed', closed: false, updatedAt: 1 };
+    h.service.store.state.forms['ses_1:frm_other_pending'] = { sessionId: 'ses_1', closed: false, updatedAt: 1 };
+    h.service.store.touch();
+    // Neither status, sessions nor sent messages carry the token.
+    const statusResponse = await api(h.port, 'GET', '/status');
+    assert.equal(statusResponse.body.lead.sessionId, 'ses_seed');
+    assert.equal(statusResponse.body.lead.paused, false);
+    assert.deepEqual(Object.keys(statusResponse.body.pending.bySession), ['ses_seed']);
+    const sessionsResponse = await api(h.port, 'GET', '/sessions');
+    assert.ok(sessionsResponse.body.sessions.some((session) => session.id === 'ses_seed'));
+    assert.ok(!JSON.stringify(statusResponse.body).includes(TOKEN), 'status must never contain the bot token');
+    assert.ok(!JSON.stringify(sessionsResponse.body).includes(TOKEN), 'sessions must never contain the bot token');
+    assert.ok(!JSON.stringify(h.sent).includes(TOKEN), 'Telegram payloads must never contain the bot token');
+    await h.service.store.flush();
+    assert.ok(!(await fs.readFile(path.join(dir, 'state.json'), 'utf8')).includes(TOKEN));
+
+    // A session the host does not know is refused and the current lead stays bound.
+    h.host.sessions.status = async () => {
+      const error = new Error('Session not found');
+      error.status = 404;
+      error.code = 'NOT_FOUND';
+      throw error;
+    };
+    const missing = await api(h.port, 'POST', '/lead', { sessionId: 'ses_missing' });
+    assert.equal(missing.status, 404);
+    const afterMissing = await api(h.port, 'GET', '/status');
+    assert.equal(afterMissing.body.lead.sessionId, 'ses_seed');
+
+    await h.service.stop();
+
+    const again = await createHarness(dir);
+    try {
+      const restored = await api(again.port, 'GET', '/status');
+      assert.equal(restored.body.lead.sessionId, 'ses_seed');
+      assert.equal(restored.body.lead.title, 'Seed project');
+      assert.equal(restored.body.lead.paused, false);
+
+      const ignoredAfterRestart = turnEvent('ses_restart_other', 'evt_restart_other', 'Other', 'nope');
+      assert.equal((await api(again.port, 'POST', '/session-events', ignoredAfterRestart)).body.ok, true);
+      await settle();
+      await again.service.outbox.drain();
+      assert.equal(again.sent.length, 0);
+      assert.equal(again.service.store.state.stats.ignored, 2);
+
+      const deletedLead = {
+        v: 1,
+        requestId: 'req_dlead',
+        event: {
+          id: 'evt_dlead',
+          type: 'session-deleted',
+          at: 6_000,
+          session: { id: 'ses_seed', parentId: null },
+          project: { directory: '/repo' },
+          linked: [],
+        },
+      };
+      assert.equal((await api(again.port, 'POST', '/session-events', deletedLead)).body.ok, true);
+      await settle();
+      await again.service.outbox.drain();
+      const pausedStatus = await api(again.port, 'GET', '/status');
+      assert.equal(pausedStatus.body.lead.sessionId, null);
+      assert.equal(pausedStatus.body.lead.paused, true);
+      assert.ok(again.sent.some((message) => /Telegram lead removed/.test(message.text)
+        && /Choose a new lead/.test(message.text)));
+    } finally {
+      await again.service.stop();
+    }
+
+    // The pause survives a restart, and binding a new lead lifts it.
+    const third = await createHarness(dir);
+    try {
+      const paused = await api(third.port, 'GET', '/status');
+      assert.equal(paused.body.lead.paused, true);
+      const rebound = await api(third.port, 'POST', '/lead', { sessionId: 'ses_fresh' });
+      assert.equal(rebound.status, 200);
+      assert.equal(rebound.body.lead.paused, false);
+      const afterRebind = turnEvent('ses_fresh', 'evt_rebound_turn', 'Fresh session', 'new lead reply');
+      assert.equal((await api(third.port, 'POST', '/session-events', afterRebind)).body.ok, true);
+      await settle();
+      await third.service.outbox.drain();
+      assert.equal(third.sent.length, 1);
+      assert.match(third.sent[0].text, /Fresh session/);
+    } finally {
+      await third.service.stop();
+    }
+  } finally {
+    await h.service.stop().catch(() => {});
+  }
+});
+
 test('smoke: session-deleted leaves /sessions, closes cards and keeps replies clear', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'telegram-desk-smoke-'));
   const h = await createHarness(dir);

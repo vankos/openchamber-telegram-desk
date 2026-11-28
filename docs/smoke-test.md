@@ -36,6 +36,24 @@ Expected: the bot username printed, one message delivered, no token in the outpu
 6. Send `/help`; expected: the command list.
 7. Press **Send test message**; expected: one test card in Telegram.
 
+### Telegram lead
+
+1. Open the panel's **Telegram lead** card. Expected: the session picker lists the sessions
+   from `/sessions`, and the card says no lead is set.
+2. Select the session you want to drive and press **Use as Telegram lead**. Expected: the
+   card and `/status.lead` show that title and id.
+3. Send `/status` and `/sessions`; expected: only the lead is listed.
+4. Finish a turn in another top-level session; expected: no Telegram notice, and the
+   panel's ignored count grows.
+5. Send `/new test task`; expected: a refusal that names the lead and points to `/send`.
+6. Send `/send hello`; expected: “Sent to …” for the lead.
+7. Delete or archive the lead in OpenChamber; expected: its open cards close, a notice
+   “Telegram lead removed … Choose a new lead” arrives, and further events from other
+   sessions stay silent. The panel shows the lead as paused.
+8. Choose another session; expected: delivery resumes for it only.
+9. Restart OpenChamber; expected: the lead survives the restart (or stays paused after a
+   removal) until changed in the panel.
+
 ## 2. Question
 
 1. Open a session in OpenChamber.
@@ -157,6 +175,9 @@ If the agent opens an answerable page:
 - A form question appears in Telegram and one button press answers the exact session.
 - A permission card offers only Allow once / Deny, and the answer reaches OpenChamber.
 - `/status`, `/sessions`, `/send`, `/stop`, `/digest` work from an allowed private chat.
+- With a lead, only that session's events arrive; other sessions are ignored silently.
+- Deleting or archiving the lead pauses delivery and asks for a new lead; nothing is
+  auto-selected.
 - An unauthorized chat is ignored.
 - The token appears in neither logs nor the panel.
-- After a restart, mappings and offset survive and an old open card still answers.
+- After a restart, mappings, offset, the lead binding and an old open card still work.

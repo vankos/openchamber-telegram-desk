@@ -277,7 +277,9 @@ const createDeskService = ({
   };
 
   const getStatus = () => {
-    const pending = sessionEvents.pendingCounts();
+    const lead = store.leadSession();
+    const pendingFilter = lead.sessionId ?? (lead.paused ? '' : null);
+    const pending = sessionEvents.pendingCounts(pendingFilter);
     const effective = effectiveIds(settings.settingsAllowlist, store.state.pairedIds);
     const pairCode = store.activePairCode();
     return {
@@ -307,6 +309,12 @@ const createDeskService = ({
         invalid: settings.invalidAllowlist,
       },
       pairing: pairCode ? { code: formatPairCode(pairCode.code), expiresAt: pairCode.expiresAt } : null,
+      lead: {
+        sessionId: lead.sessionId,
+        title: lead.title,
+        setAt: lead.setAt,
+        paused: lead.paused,
+      },
       preferences: {
         notifyMode: sessionEvents.currentMode(),
         override: store.state.preferences.notifyMode,
@@ -378,6 +386,55 @@ const createDeskService = ({
     return { status: 200, body: { ok: true, status: getStatus() } };
   };
 
+  const findLeadCandidate = async (sessionId) => {
+    const sessions = await commands.listSessions({ includeSubagents: true, withStatus: false, limit: 100 });
+    const found = sessions.find((session) => session.id === sessionId);
+    if (found) return found;
+    // OpenCode's list is capped and archives disappear from it. The host knows the
+    // session directly; a 404 there means it no longer exists.
+    if (host.available) {
+      try {
+        await host.sessions.status(sessionId);
+        const registry = store.state.sessionRegistry[sessionId] ?? {};
+        return {
+          id: sessionId,
+          title: registry.title ?? null,
+          parentId: registry.parentId ?? null,
+          directory: registry.directory ?? null,
+          updatedAt: registry.updatedAt ?? 0,
+        };
+      } catch (error) {
+        if (error?.status === 404 || error?.code === 'NOT_FOUND') return null;
+      }
+    }
+    return null;
+  };
+
+  const handleLead = async (body) => {
+    const raw = body?.sessionId;
+    if (raw === null || raw === undefined || raw === '') {
+      store.clearLeadSession();
+      await store.flush();
+      return { status: 200, body: { ok: true, lead: getStatus().lead } };
+    }
+    const sessionId = typeof raw === 'string' ? raw.trim() : '';
+    if (!sessionId || sessionId.length > 200 || !/^[A-Za-z0-9_-]+$/.test(sessionId)) {
+      return { status: 400, body: { ok: false, error: 'sessionId must be a session id or null' } };
+    }
+    const session = await findLeadCandidate(sessionId);
+    if (!session) {
+      return { status: 404, body: { ok: false, error: `Session ${sessionId} was not found.` } };
+    }
+    if (session.parentId) {
+      return { status: 400, body: { ok: false, error: 'Choose a top-level session, not a subagent session.' } };
+    }
+    store.setLeadSession({ sessionId, title: session.title ?? null });
+    // Cards and queued sends that belong to other sessions must not arrive after the bind.
+    await sessionEvents.enforceLead({ closeCards: true });
+    await store.flush();
+    return { status: 200, body: { ok: true, lead: getStatus().lead } };
+  };
+
   const handleHttp = async (req, res) => {
     if (!authorize(req)) {
       sendJson(res, 401, { ok: false, error: 'unauthorized' });
@@ -418,6 +475,16 @@ const createDeskService = ({
     }
     if (pathname === '/pair/code' && method === 'POST') {
       sendJson(res, 200, handlePairCode());
+      return;
+    }
+    if (pathname === '/lead' && method === 'POST') {
+      const body = parseJson(await readBody(req));
+      if (!body) {
+        sendJson(res, 400, { ok: false, error: 'invalid json' });
+        return;
+      }
+      const result = await handleLead(body);
+      sendJson(res, result.status, result.body);
       return;
     }
     if (pathname === '/notify-mode' && method === 'POST') {
@@ -550,6 +617,29 @@ const createDeskService = ({
       return;
     }
 
+    // A card from another session (or any card while a removed lead paused delivery)
+    // must never reach the host. Close it and report stale.
+    const lead = store.leadSession();
+    const staleLead = (lead.sessionId && payload.sessionId !== lead.sessionId)
+      || (!lead.sessionId && lead.paused);
+    if (staleLead) {
+      const note = 'This card belongs to a session that is not the Telegram lead.';
+      if (payload.kind === 'permission') {
+        const permission = store.state.permissions[payload.requestId];
+        if (permission && !permission.closed) await sessionEvents.closePermission(permission, note);
+      } else {
+        const staleForm = store.state.forms[`${payload.sessionId}:${payload.formId}`];
+        if (staleForm && !staleForm.closed) await sessionEvents.closeForm(staleForm, note);
+      }
+      store.markCallback(callbackId, 'stale');
+      await telegram.answerCallbackQuery({
+        callbackQueryId: callbackId,
+        text: 'This card belongs to a session that is not the Telegram lead.',
+      }).catch(() => {});
+      await store.flush();
+      return;
+    }
+
     let form = null;
     if (payload.kind !== 'permission') {
       form = store.state.forms[`${payload.sessionId}:${payload.formId}`] ?? null;
@@ -675,6 +765,9 @@ const createDeskService = ({
     await store.load();
     startedAt = clock();
     recomputePrimary();
+    // State survives a restart with queued cards that may predate the binding.
+    await sessionEvents.enforceLead();
+    await store.flush();
 
     server = http.createServer((req, res) => {
       void handleHttp(req, res).catch((error) => {

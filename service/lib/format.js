@@ -412,6 +412,40 @@ const formatStopResult = ({ title, stopped }) => {
   return { text: html, plain: htmlToPlain(html) };
 };
 
+const formatLeadRemoved = ({ title, sessionId, reason = 'deleted' }) => {
+  const what = reason === 'archived' ? 'archived' : 'deleted';
+  const html = clipHtmlSafe([
+    '🛑 <b>Telegram lead removed</b>',
+    `The lead session ${bold(sessionTitle(title || sessionId))} was ${what} in OpenChamber.`,
+    '<i>Choose a new lead in the Telegram Desk panel. Until then, events from other sessions are not sent to Telegram.</i>',
+  ].join('\n'));
+  return { text: html, plain: htmlToPlain(html) };
+};
+
+const formatLeadPaused = () => {
+  const html = [
+    '⚠️ <b>No Telegram lead</b>',
+    'The previous lead was removed, so delivery is paused. Choose a new lead in the Telegram Desk panel.',
+  ].join('\n');
+  return { text: html, plain: htmlToPlain(html) };
+};
+
+const formatLeadNewBlocked = ({ title, sessionId }) => {
+  const html = clipHtmlSafe([
+    `⚠️ A Telegram lead is set: ${bold(sessionTitle(title || sessionId))}.`,
+    '<i>Work goes through the lead: send the task to it with /send &lt;text&gt; or reply to one of its messages.</i>',
+  ].join('\n'));
+  return { text: html, plain: htmlToPlain(html) };
+};
+
+const formatLeadTargetOnly = ({ title, sessionId }) => {
+  const html = clipHtmlSafe([
+    `⚠️ Messages go only to the Telegram lead: ${bold(sessionTitle(title || sessionId))}.`,
+    '<i>Clear the lead in the Telegram Desk panel to message other sessions.</i>',
+  ].join('\n'));
+  return { text: html, plain: htmlToPlain(html) };
+};
+
 const formatReplySent = (title) => {
   const html = `✅ Sent to <b>${escapeHtml(sessionTitle(title))}</b>.`;
   return { text: html, plain: htmlToPlain(html) };
@@ -474,6 +508,10 @@ module.exports = {
   formatSendSuccess,
   formatNewSession,
   formatStopResult,
+  formatLeadRemoved,
+  formatLeadPaused,
+  formatLeadNewBlocked,
+  formatLeadTargetOnly,
   formatReplySent,
   formatNoTarget,
   formatTestMessage,

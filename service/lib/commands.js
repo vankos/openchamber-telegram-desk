@@ -17,6 +17,9 @@ const {
   formatSendSuccess,
   formatNewSession,
   formatStopResult,
+  formatLeadNewBlocked,
+  formatLeadPaused,
+  formatLeadTargetOnly,
   formatReplySent,
   formatNoTarget,
   formatInvalidCommand,
@@ -180,6 +183,32 @@ const createCommands = ({
     }));
   };
 
+  const leadSession = () => store.leadSession();
+
+  const leadEntry = async () => {
+    const lead = leadSession();
+    if (!lead.sessionId) return null;
+    const sessions = await listSessions({ withStatus: true, limit: 100 });
+    const found = sessions.find((session) => session.id === lead.sessionId);
+    if (found) return found;
+    const registry = store.state.sessionRegistry[lead.sessionId] ?? {};
+    const pending = sessionEvents.pendingCounts(lead.sessionId).bySession.get(lead.sessionId) ?? 0;
+    return {
+      id: lead.sessionId,
+      title: lead.title ?? registry.title ?? lead.sessionId,
+      parentId: registry.parentId ?? null,
+      directory: registry.directory ?? null,
+      updatedAt: registry.updatedAt ?? 0,
+      status: pending > 0 ? 'waiting' : (registry.status ?? 'idle'),
+      pendingCount: pending,
+    };
+  };
+
+  const leadTarget = (session) => ({
+    id: session.id,
+    title: session.title ?? store.state.leadSessionTitle ?? session.id,
+  });
+
   const resolveSession = async (target, chatId) => {
     const value = String(target ?? '').trim().replace(/^[#@]/, '');
     if (!value) return { error: 'A session is required.' };
@@ -234,6 +263,15 @@ const createCommands = ({
     return reply(formatSendSuccess(session.title ?? session.id));
   };
 
+  const sendWithLead = async (lead, text) => {
+    try {
+      return await sendToSession({ id: lead.sessionId, title: lead.title }, text);
+    } catch (error) {
+      logger?.warn('sessions.send failed', { code: error?.code, status: error?.status });
+      return reply(formatError(safeError(error).message ?? 'Could not send to OpenChamber.'));
+    }
+  };
+
   const handlePairing = ({ chatId, userId, isPrivate, code, botUsername }) => {
     if (!isPrivate) return null;
     if (!store.pairAttempt(chatId, 8, 10 * 60 * 1000)) return null;
@@ -251,6 +289,38 @@ const createCommands = ({
   const handleReply = async ({ chatId, userId, replyToMessageId, text }) => {
     const route = store.messageRoute(chatId, replyToMessageId);
     if (!route) return reply(formatNoTarget());
+    const lead = leadSession();
+    if (lead.sessionId) {
+      if (route.formKey) {
+        const form = store.state.forms[route.formKey];
+        if (!form || form.sessionId !== lead.sessionId) {
+          if (form && !form.closed) {
+            await sessionEvents.closeForm(form, 'This question belongs to a session that is not the Telegram lead.');
+          }
+          return reply(formatError('That question belongs to a session that is not the Telegram lead. Send the text to the lead instead.'));
+        }
+        if (!form.closed) {
+          const outcome = await answerEngine.answerWithText(form, text);
+          if (outcome.ok) {
+            return reply({
+              text: outcome.updated
+                ? '✅ Saved. Finish the remaining fields or press Submit.'
+                : '✅ Answer sent to OpenChamber.',
+              plain: outcome.updated
+                ? 'Saved. Finish the remaining fields or press Submit.'
+                : 'Answer sent to OpenChamber.',
+            });
+          }
+          return reply(formatError(outcome.error));
+        }
+      }
+      try {
+        return await sendToSession({ id: lead.sessionId, title: lead.title }, text);
+      } catch (error) {
+        logger?.warn('Could not send a reply to the lead', { code: error?.code, status: error?.status });
+        return reply(formatError(safeError(error).message ?? 'Could not reach OpenChamber.'));
+      }
+    }
     if (route.formKey) {
       const form = store.state.forms[route.formKey];
       if (form && !form.closed) {
@@ -279,19 +349,30 @@ const createCommands = ({
   };
 
   const handleCommand = async ({ chatId, userId, command, args, rest, messageId }) => {
+    const lead = leadSession();
+    if (lead.paused && ['/status', '/sessions', '/new', '/send', '/stop', '/digest'].includes(command)) {
+      return reply(formatLeadPaused());
+    }
     switch (command) {
       case '/help':
         return reply(formatHelp());
       case '/status': {
-        const sessions = await listSessions({ withStatus: true, limit: 25 });
+        const sessions = lead.sessionId
+          ? [await leadEntry()].filter(Boolean)
+          : await listSessions({ withStatus: true, limit: 25 });
         return reply(formatStatus({ sessions, now: clock() }));
       }
       case '/sessions': {
-        const sessions = await listSessions({ withStatus: true, limit: 25 });
+        const sessions = lead.sessionId
+          ? [await leadEntry()].filter(Boolean)
+          : await listSessions({ withStatus: true, limit: 25 });
         store.setLastSessionList(chatId, sessions.map((session) => session.id));
         return reply(formatSessions({ sessions, now: clock() }));
       }
       case '/new': {
+        if (lead.sessionId) {
+          return reply(formatLeadNewBlocked({ title: lead.title, sessionId: lead.sessionId }));
+        }
         const task = String(rest ?? '').trim();
         if (!task) return reply(formatError('Usage: /new <task>'));
         if (typeof host?.sessions?.start !== 'function') {
@@ -322,6 +403,21 @@ const createCommands = ({
       }
       case '/send': {
         const { target, text } = splitTarget(args);
+        if (lead.sessionId) {
+          const wholeText = String(rest ?? '').trim() || [target, text].filter(Boolean).join(' ').trim();
+          if (!wholeText) return reply(formatError('Usage: /send <text>'));
+          if (args.length <= 1) return sendWithLead(lead, wholeText);
+          const resolved = await resolveSession(target, chatId);
+          if (resolved.session) {
+            if (resolved.session.id === lead.sessionId) return sendWithLead(lead, text);
+            return reply(formatLeadTargetOnly({ title: lead.title, sessionId: lead.sessionId }));
+          }
+          // A bare text that happens to start with a word is the default target: the lead.
+          if (/^\d+$/.test(target.replace(/^[#@]/, '')) || /^ses_/.test(target)) {
+            return reply(formatError(resolved.error));
+          }
+          return sendWithLead(lead, wholeText);
+        }
         if (!target || !text) return reply(formatError('Usage: /send <session> <text>'));
         const resolved = await resolveSession(target, chatId);
         if (!resolved.session) return reply(formatError(resolved.error));
@@ -334,6 +430,25 @@ const createCommands = ({
       }
       case '/stop': {
         const target = splitStopTarget(args);
+        if (lead.sessionId) {
+          let session = leadTarget(await leadEntry());
+          if (target) {
+            const resolved = await resolveSession(target, chatId);
+            if (!resolved.session) return reply(formatError(resolved.error));
+            if (resolved.session.id !== lead.sessionId) {
+              return reply(formatLeadTargetOnly({ title: lead.title, sessionId: lead.sessionId }));
+            }
+            session = resolved.session;
+          }
+          try {
+            const result = await host.sessions.stop(session.id);
+            if (result?.stopped) store.touchSession(session.id, { status: 'idle' });
+            return reply(formatStopResult({ title: session.title ?? session.id, stopped: result?.stopped === true }));
+          } catch (error) {
+            logger?.warn('sessions.stop failed', { code: error?.code, status: error?.status });
+            return reply(formatError(safeError(error).message ?? 'Could not stop the session.'));
+          }
+        }
         if (!target) return reply(formatError('Usage: /stop <session>'));
         const resolved = await resolveSession(target, chatId);
         if (!resolved.session) return reply(formatError(resolved.error));
@@ -347,14 +462,19 @@ const createCommands = ({
         }
       }
       case '/digest': {
-        const sessions = await listSessions({ withStatus: true, limit: 25 });
-        const pending = sessionEvents.pendingCounts();
+        const sessions = lead.sessionId
+          ? [await leadEntry()].filter(Boolean)
+          : await listSessions({ withStatus: true, limit: 25 });
+        const pending = sessionEvents.pendingCounts(lead.sessionId ?? null);
+        const recentEvents = lead.sessionId
+          ? store.state.recentEvents.filter((event) => event.sessionId === lead.sessionId)
+          : store.state.recentEvents;
         const since = store.lastDigest(chatId);
         store.setLastDigest(chatId, clock());
         return reply(formatDigest({
           sessions,
           pending,
-          recentEvents: store.state.recentEvents,
+          recentEvents,
           since,
           now: clock(),
         }));

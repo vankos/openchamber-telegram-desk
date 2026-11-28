@@ -10,9 +10,13 @@ const state = {
   error: null,
   loading: false,
   busy: new Set(),
+  sessions: [],
+  sessionsLoading: false,
+  leadOptionsKey: '',
   testResult: '',
   pairResult: '',
   notifyResult: '',
+  leadResult: '',
   lastLoadedAt: 0,
 };
 
@@ -88,6 +92,11 @@ const setBusy = (key, value) => {
   if (key === 'test') $('test-button').disabled = value;
   if (key === 'pair') $('pair-button').disabled = value;
   if (key === 'notify') $('notify-mode').disabled = value;
+  if (key === 'lead') {
+    $('lead-set-button').disabled = value;
+    $('lead-clear-button').disabled = value;
+    $('lead-session').disabled = value;
+  }
 };
 
 const setResult = (id, text, isError = false) => {
@@ -212,6 +221,121 @@ const renderNotify = (status) => {
   setText('notify-hint', `Active means a session asked a question, requested permission, or was messaged from Telegram in the last 24 hours. The default is all. Current value: ${source}.`);
 };
 
+const renderLeadSessions = () => {
+  const select = $('lead-session');
+  if (!select) return;
+  const currentValue = select.value;
+  const lead = state.status?.lead ?? null;
+  const sessions = Array.isArray(state.sessions) ? [...state.sessions] : [];
+  if (lead?.sessionId && !sessions.some((session) => session.id === lead.sessionId)) {
+    sessions.unshift({ id: lead.sessionId, title: lead.title || lead.sessionId, status: 'unknown' });
+  }
+  const optionsKey = JSON.stringify([
+    lead?.sessionId ?? null,
+    sessions.map((session) => [session.id, session.title ?? null, session.status ?? null]),
+  ]);
+  if (optionsKey === state.leadOptionsKey) {
+    if (sessions.some((session) => session.id === currentValue)) select.value = currentValue;
+    return;
+  }
+  state.leadOptionsKey = optionsKey;
+  select.replaceChildren();
+  if (!sessions.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'No sessions known yet';
+    select.append(option);
+    return;
+  }
+  for (const session of sessions) {
+    const option = document.createElement('option');
+    option.value = session.id;
+    const title = session.title || session.id;
+    option.textContent = `${title} — ${session.id}${session.status ? ` (${session.status})` : ''}`;
+    select.append(option);
+  }
+  const desired = sessions.some((session) => session.id === currentValue)
+    ? currentValue
+    : (lead?.sessionId || sessions[0].id);
+  select.value = desired;
+};
+
+const renderLead = (status) => {
+  const lead = status?.lead ?? { sessionId: null, title: null, setAt: null, paused: false };
+  const hasLead = Boolean(lead.sessionId);
+  setText('lead-state', lead.paused ? 'paused' : hasLead ? 'active' : 'no lead');
+  if (lead.paused) {
+    setText('lead-current', 'The previous lead was removed, so delivery is paused. Choose a new lead to resume events.');
+  } else if (hasLead) {
+    setText('lead-current', `Events, commands and replies target ${lead.title || lead.sessionId} (${lead.sessionId}).`);
+  } else {
+    setText('lead-current', 'No lead is set. Events from every session follow the notification mode.');
+  }
+  const clear = $('lead-clear-button');
+  if (clear) clear.disabled = !hasLead && !lead.paused;
+  renderLeadSessions();
+};
+
+const loadSessions = async () => {
+  if (state.sessionsLoading || document.hidden) return;
+  state.sessionsLoading = true;
+  try {
+    const result = await request('GET', '/sessions');
+    if (result.status === 200 && result.body.ok !== false) {
+      state.sessions = Array.isArray(result.body.sessions) ? result.body.sessions : [];
+      renderLeadSessions();
+    }
+  } catch {
+    // Keep the previous list; the picker still shows a bindable lead if it is known.
+  } finally {
+    state.sessionsLoading = false;
+  }
+};
+
+const setLead = async () => {
+  const sessionId = $('lead-session').value;
+  if (!sessionId) {
+    setResult('lead-result', 'Choose a session first.', true);
+    return;
+  }
+  setBusy('lead', true);
+  setResult('lead-result', 'Saving…');
+  try {
+    const result = await request('POST', '/lead', { sessionId });
+    if (result.status === 200 && result.body.ok) {
+      setResult('lead-result', 'The Telegram lead is set.');
+      await loadStatus();
+      await loadSessions();
+    } else {
+      setResult('lead-result', result.body.error || `HTTP ${result.status}`, true);
+    }
+  } catch (error) {
+    setResult('lead-result', serviceError(error), true);
+  } finally {
+    setBusy('lead', false);
+    renderLead(state.status);
+  }
+};
+
+const clearLead = async () => {
+  setBusy('lead', true);
+  setResult('lead-result', 'Saving…');
+  try {
+    const result = await request('POST', '/lead', { sessionId: null });
+    if (result.status === 200 && result.body.ok) {
+      setResult('lead-result', 'Lead cleared. Events follow the notification mode again.');
+      await loadStatus();
+    } else {
+      setResult('lead-result', result.body.error || `HTTP ${result.status}`, true);
+    }
+  } catch (error) {
+    setResult('lead-result', serviceError(error), true);
+  } finally {
+    setBusy('lead', false);
+    renderLead(state.status);
+  }
+};
+
 const eventIcon = (type) => ({
   'turn-finished': '✅',
   'turn-failed': '❌',
@@ -278,6 +402,7 @@ const renderStatus = (status) => {
   renderSetup(status);
   renderFacts(status);
   renderPairing(status);
+  renderLead(status);
   renderNotify(status);
   renderEvents(status);
   const pending = status?.pending ?? { questions: 0, permissions: 0 };
@@ -410,8 +535,13 @@ const bind = () => {
   $('test-button').addEventListener('click', () => void sendTest());
   $('pair-button').addEventListener('click', () => void createPairCode());
   $('notify-mode').addEventListener('change', () => void changeNotifyMode());
+  $('lead-set-button').addEventListener('click', () => void setLead());
+  $('lead-clear-button').addEventListener('click', () => void clearLead());
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) void loadStatus();
+    if (!document.hidden) {
+      void loadStatus();
+      void loadSessions();
+    }
   });
 };
 
@@ -432,5 +562,7 @@ if (typeof host.onServiceEvent === 'function') {
 
 bind();
 void refreshServiceState().then(() => loadStatus());
+void loadSessions();
 setInterval(() => void loadStatus(), 3000);
+setInterval(() => void loadSessions(), 30_000);
 setInterval(() => updateExpiry(), 1000);

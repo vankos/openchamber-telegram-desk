@@ -19,6 +19,8 @@ test('the packaged manifest parses', () => {
   assert.equal(manifest.contributes.service.keepRunning, true);
   assert.equal(manifest.contributes.sessionControl.answers, true);
   assert.equal(manifest.contributes.sessionEvents.content, true);
+  assert.ok(manifest.contributes.sessionEvents.events.includes('session-deleted'));
+  assert.ok(manifest.contributes.sessionEvents.events.includes('session-archived'));
   assert.equal(manifest.contributes.integration.settings.find((field) => field.id === 'bot-token').secret, true);
 });
 
@@ -28,6 +30,10 @@ test('all files the host checks at install exist', () => {
   }
   const html = readFileSync(path.join(root, 'panel/index.html'), 'utf8');
   assert.match(html, /src="\.\/main\.js"/);
+  assert.match(html, /id="lead-session"/);
+  assert.match(html, /Use as Telegram lead/);
+  assert.match(html, /id="lead-clear-button"/);
   const panel = readFileSync(path.join(root, 'panel/main.js'), 'utf8');
   assert.ok(!/^\s*(import|export)\s/m.test(panel), 'panel bundle must be a classic IIFE');
+  assert.match(panel, /\/lead/);
 });

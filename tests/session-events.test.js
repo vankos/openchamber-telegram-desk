@@ -374,4 +374,126 @@ test('pending counts group questions and permissions by session', async () => {
   assert.equal(counts.permissions, 1);
   assert.equal(counts.bySession.get('ses_1'), 1);
   assert.equal(counts.bySession.get('ses_2'), 1);
+  const onlyLead = h.events.pendingCounts('ses_1');
+  assert.equal(onlyLead.questions, 1);
+  assert.equal(onlyLead.permissions, 0);
+  assert.deepEqual([...onlyLead.bySession.keys()], ['ses_1']);
+});
+
+test('with a lead, events from every other session are ignored and create nothing', async () => {
+  const h = await makeHarness({ notifySetting: 'all' });
+  h.store.setLeadSession({ sessionId: 'ses_lead', title: 'Lead session' });
+
+  const turn = baseEvent('turn-finished', { session: { id: 'ses_other', parentId: null } });
+  turn.content = { type: 'turn-finished', sessionTitle: 'Other', reply: 'done', replyTruncated: false };
+  await h.events.handle(turn);
+
+  const question = baseEvent('question-asked', {
+    session: { id: 'ses_other', parentId: null },
+    question: { kind: 'form', id: 'frm_other' },
+  });
+  question.content = {
+    type: 'question-asked',
+    sessionTitle: 'Other',
+    ask: {
+      kind: 'form',
+      id: 'frm_other',
+      title: 'Other question',
+      fields: [{ key: 'x', type: 'string', title: 'X', required: true }],
+    },
+  };
+  await h.events.handle(question);
+
+  const permission = baseEvent('permission-asked', {
+    session: { id: 'ses_other', parentId: null },
+    permission: { requestId: 'perm_other' },
+  });
+  permission.content = {
+    type: 'permission-asked',
+    sessionTitle: 'Other',
+    action: 'bash',
+    resources: ['rm -rf /tmp/x'],
+  };
+  await h.events.handle(permission);
+
+  const started = baseEvent('turn-started', { session: { id: 'ses_other', parentId: null } });
+  await h.events.handle(started);
+
+  await settle();
+  await h.outbox.drain();
+  assert.equal(h.sent.length, 0);
+  assert.equal(h.store.state.sessionRegistry.ses_other, undefined);
+  assert.equal(Object.keys(h.store.state.forms).length, 0);
+  assert.equal(Object.keys(h.store.state.permissions).length, 0);
+  assert.equal(Object.keys(h.store.state.refs).length, 0);
+  assert.equal(h.store.state.outbox.length, 0);
+  assert.equal(h.store.state.stats.ignored, 4);
+  assert.equal(h.store.state.recentEvents.at(-1).delivery, 'ignored');
+  assert.match(h.store.state.recentEvents.at(-1).detail, /not the Telegram lead/);
+
+  const leadTurn = baseEvent('turn-finished', { session: { id: 'ses_lead', parentId: null } });
+  leadTurn.content = { type: 'turn-finished', sessionTitle: 'Lead session', reply: 'lead done', replyTruncated: false };
+  await h.events.handle(leadTurn);
+  await settle();
+  await h.outbox.drain();
+  assert.equal(h.sent.length, 1);
+  assert.match(h.sent[0].text, /Lead session/);
+  assert.equal(h.store.state.sessionRegistry.ses_lead.status, 'idle');
+  assert.equal(h.store.state.stats.ignored, 4);
+});
+
+test('deleting the lead clears the binding, pauses delivery and asks for a new lead', async () => {
+  const h = await makeHarness({ notifySetting: 'all' });
+  h.store.setLeadSession({ sessionId: 'ses_1', title: 'Fix parser' });
+  h.store.touchSession('ses_1', { title: 'Fix parser', status: 'busy' });
+  h.store.watchSession('ses_1');
+
+  const result = await h.events.handle(baseEvent('session-deleted'));
+  assert.equal(result.ok, true);
+  assert.equal(h.store.state.sessionRegistry.ses_1, undefined);
+  assert.equal(h.store.isWatched('ses_1'), false);
+  assert.equal(h.store.state.leadSessionId, null);
+  assert.equal(h.store.state.leadPaused, true);
+  await settle();
+  await h.outbox.drain();
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.sent[0].chatId, 100);
+  assert.match(h.sent[0].text, /Telegram lead removed/);
+  assert.match(h.sent[0].text, /deleted in OpenChamber/);
+  assert.match(h.sent[0].text, /Choose a new lead/);
+
+  // While paused, even a normal session event is ignored instead of leaking.
+  const other = baseEvent('turn-finished', { session: { id: 'ses_2', parentId: null } });
+  other.content = { type: 'turn-finished', sessionTitle: 'Other', reply: 'done', replyTruncated: false };
+  await h.events.handle(other);
+  await settle();
+  await h.outbox.drain();
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.store.state.stats.ignored, 1);
+  assert.match(h.store.state.recentEvents.at(-1).detail, /paused/);
+  h.store.state.forms['ses_2:frm_keep'] = { sessionId: 'ses_2', closed: false, updatedAt: 1 };
+  assert.equal(h.events.pendingCounts('').questions, 0);
+  assert.equal(h.events.pendingCounts().questions, 1);
+
+  // Choosing a new lead lifts the pause.
+  h.store.setLeadSession({ sessionId: 'ses_2', title: 'Other' });
+  assert.equal(h.store.leadSession().paused, false);
+});
+
+test('archiving the lead clears the binding and pauses delivery', async () => {
+  const h = await makeHarness({ notifySetting: 'all' });
+  h.store.setLeadSession({ sessionId: 'ses_1', title: 'Fix parser' });
+  h.store.touchSession('ses_1', { title: 'Fix parser', status: 'busy' });
+
+  const result = await h.events.handle(baseEvent('session-archived'));
+  assert.equal(result.ok, true);
+  assert.equal(h.store.state.sessionRegistry.ses_1, undefined);
+  assert.equal(h.store.state.leadSessionId, null);
+  assert.equal(h.store.state.leadPaused, true);
+  await settle();
+  await h.outbox.drain();
+  assert.equal(h.sent.length, 1);
+  assert.match(h.sent[0].text, /Telegram lead removed/);
+  assert.match(h.sent[0].text, /archived in OpenChamber/);
+  assert.match(h.sent[0].text, /Choose a new lead/);
 });

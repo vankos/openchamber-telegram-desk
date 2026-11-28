@@ -1,6 +1,6 @@
 {
   "name": "openchamber-telegram-desk",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "private": true,
   "description": "Two-way Telegram bridge for OpenChamber sessions: questions, permissions, commands and reply routing.",
   "license": "MIT",
@@ -36,6 +36,7 @@
           "turn-failed",
           "turn-started",
           "session-created",
+          "session-archived",
           "session-deleted"
         ],
         "content": true

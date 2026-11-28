@@ -304,3 +304,144 @@ test('unknown commands and plain text get a short help reply', async () => {
   });
   assert.match(plain.text, /Reply to a bot message/);
 });
+
+test('a lead scopes /status, /sessions, /send and /stop', async () => {
+  const h = await makeHarness();
+  h.store.setPrimaryChat(100);
+  h.store.addPairedId(100);
+  h.store.setLeadSession({ sessionId: 'ses_2', title: 'Build release' });
+  h.store.state.forms['ses_2:frm_lead'] = { sessionId: 'ses_2', closed: false, updatedAt: 1 };
+  h.store.state.forms['ses_1:frm_other'] = { sessionId: 'ses_1', closed: false, updatedAt: 1 };
+
+  const status = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/status', isPrivate: true, chatType: 'private',
+  });
+  assert.match(status.text, /Build release/);
+  assert.match(status.text, /1 waiting/);
+  assert.doesNotMatch(status.text, /Fix parser/);
+  assert.doesNotMatch(status.text, /ses_1/);
+
+  const sessions = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/sessions', isPrivate: true, chatType: 'private',
+  });
+  assert.match(sessions.text, /ses_2/);
+  assert.doesNotMatch(sessions.text, /ses_1/);
+  assert.deepEqual(h.store.lastSessionList(100), ['ses_2']);
+
+  const byDefault = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/send hello there', isPrivate: true, chatType: 'private',
+  });
+  assert.match(byDefault.text, /Sent to/);
+  assert.deepEqual(h.hostCalls.find((call) => call[0] === 'send'), ['send', 'ses_2', 'hello there']);
+
+  const byNumber = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/send 1 another', isPrivate: true, chatType: 'private',
+  });
+  assert.match(byNumber.text, /Sent to/);
+  assert.deepEqual(h.hostCalls.filter((call) => call[0] === 'send').at(-1), ['send', 'ses_2', 'another']);
+
+  const sendsBefore = h.hostCalls.filter((call) => call[0] === 'send').length;
+  const other = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/send ses_1 no', isPrivate: true, chatType: 'private',
+  });
+  assert.match(other.text, /only to the Telegram lead/);
+  assert.equal(h.hostCalls.filter((call) => call[0] === 'send').length, sendsBefore);
+
+  const stopped = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/stop', isPrivate: true, chatType: 'private',
+  });
+  assert.match(stopped.text, /Stopped/);
+  assert.deepEqual(h.hostCalls.find((call) => call[0] === 'stop'), ['stop', 'ses_2']);
+
+  const stopsBefore = h.hostCalls.filter((call) => call[0] === 'stop').length;
+  const stopOther = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/stop ses_1', isPrivate: true, chatType: 'private',
+  });
+  assert.match(stopOther.text, /only to the Telegram lead/);
+  assert.equal(h.hostCalls.filter((call) => call[0] === 'stop').length, stopsBefore);
+});
+
+test('a lead blocks /new and points the task at the lead', async () => {
+  const h = await makeHarness();
+  h.store.setPrimaryChat(100);
+  h.store.addPairedId(100);
+  h.store.setLeadSession({ sessionId: 'ses_2', title: 'Build release' });
+  const result = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/new fix the failing tests', isPrivate: true, chatType: 'private',
+  });
+  assert.match(result.text, /Telegram lead/);
+  assert.match(result.text, /Build release/);
+  assert.match(result.text, /\/send/);
+  assert.equal(h.hostCalls.filter((call) => call[0] === 'start').length, 0);
+
+  const noTask = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/new', isPrivate: true, chatType: 'private',
+  });
+  assert.match(noTask.text, /Telegram lead/);
+});
+
+test('with a lead, replies go to the lead and other form cards are stale', async () => {
+  const h = await makeHarness();
+  h.store.setPrimaryChat(100);
+  h.store.addPairedId(100);
+  h.store.setLeadSession({ sessionId: 'ses_2', title: 'Build release' });
+
+  h.store.recordMessage(100, 501, { sessionId: 'ses_1', sessionTitle: 'Fix parser', kind: 'finish' });
+  const reply = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: 'one more thing', isPrivate: true, chatType: 'private', replyToMessageId: 501,
+  });
+  assert.match(reply.text, /Sent to/);
+  assert.deepEqual(h.hostCalls.find((call) => call[0] === 'send'), ['send', 'ses_2', 'one more thing']);
+
+  const otherForm = createFormState(
+    { sessionId: 'ses_1', sessionTitle: 'Fix parser', chatId: 100 },
+    { id: 'frm_other', title: 'Old question', fields: [{ key: 'note', type: 'string', title: 'Note', required: true }] },
+  );
+  otherForm.messageId = 777;
+  h.store.state.forms['ses_1:frm_other'] = otherForm;
+  h.store.recordMessage(100, 777, {
+    sessionId: 'ses_1', sessionTitle: 'Fix parser', kind: 'form', formKey: 'ses_1:frm_other',
+  });
+  const stale = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: 'some details', isPrivate: true, chatType: 'private', replyToMessageId: 777,
+  });
+  assert.match(stale.text, /not the Telegram lead/);
+  assert.equal(otherForm.closed, true);
+  assert.equal(h.hostCalls.filter((call) => call[0] === 'answerForm').length, 0);
+
+  const leadForm = createFormState(
+    { sessionId: 'ses_2', sessionTitle: 'Build release', chatId: 100 },
+    { id: 'frm_lead', title: 'Lead question', fields: [{ key: 'note', type: 'string', title: 'Note', required: true }] },
+  );
+  leadForm.messageId = 778;
+  h.store.state.forms['ses_2:frm_lead'] = leadForm;
+  h.store.recordMessage(100, 778, {
+    sessionId: 'ses_2', sessionTitle: 'Build release', kind: 'form', formKey: 'ses_2:frm_lead',
+  });
+  const answered = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: 'lead details', isPrivate: true, chatType: 'private', replyToMessageId: 778,
+  });
+  assert.match(answered.text, /Answer sent|Saved/);
+  assert.deepEqual(h.hostCalls.find((call) => call[0] === 'answerForm'), [
+    'answerForm', 'ses_2', 'frm_lead', { note: 'lead details' }, undefined,
+  ]);
+});
+
+test('a paused lead rejects work commands until a new lead is chosen', async () => {
+  const h = await makeHarness();
+  h.store.setPrimaryChat(100);
+  h.store.addPairedId(100);
+  h.store.clearLeadSession({ paused: true });
+  for (const text of ['/status', '/sessions', '/send hello', '/stop', '/new do it', '/digest']) {
+    const result = await h.commands.handleMessage({
+      chatId: 100, userId: 100, text, isPrivate: true, chatType: 'private',
+    });
+    assert.match(result.text, /No Telegram lead/);
+    assert.match(result.text, /Choose a new lead/);
+  }
+  assert.equal(h.hostCalls.filter((call) => call[0] === 'send' || call[0] === 'stop' || call[0] === 'start').length, 0);
+  const help = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/help', isPrivate: true, chatType: 'private',
+  });
+  assert.match(help.text, /Telegram Desk/);
+});

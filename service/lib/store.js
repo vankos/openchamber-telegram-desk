@@ -24,11 +24,15 @@ const defaultState = () => ({
   sessionRegistry: {},
   watchedSessions: {},
   lastSessionLists: {},
+  leadSessionId: null,
+  leadSessionTitle: null,
+  leadSetAt: null,
+  leadPaused: false,
   preferences: { notifyMode: null },
   outbox: [],
   recentEvents: [],
   lastDigestAt: {},
-  stats: { events: 0, sent: 0, answers: 0, errors: 0 },
+  stats: { events: 0, sent: 0, answers: 0, errors: 0, ignored: 0 },
 });
 
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -110,12 +114,25 @@ class Store {
       'sessionRegistry', 'watchedSessions', 'pairAttempts', 'lastDigestAt', 'lastSessionLists']) {
       state[key] = mapValues(state[key]);
     }
+    if (typeof state.leadSessionId === 'string') {
+      state.leadSessionId = state.leadSessionId.trim() || null;
+    } else {
+      state.leadSessionId = null;
+    }
+    if (!state.leadSessionId) {
+      state.leadSessionTitle = null;
+      state.leadSetAt = null;
+    } else {
+      if (typeof state.leadSessionTitle !== 'string' || !state.leadSessionTitle.trim()) state.leadSessionTitle = null;
+      if (!Number.isFinite(state.leadSetAt) || state.leadSetAt <= 0) state.leadSetAt = null;
+    }
+    state.leadPaused = state.leadPaused === true;
     if (!isObject(state.preferences)) state.preferences = { notifyMode: null };
     if (!['all', 'active', 'off', null].includes(state.preferences.notifyMode)) state.preferences.notifyMode = null;
     if (!Array.isArray(state.outbox)) state.outbox = [];
     if (!Array.isArray(state.recentEvents)) state.recentEvents = [];
-    if (!isObject(state.stats)) state.stats = { events: 0, sent: 0, answers: 0, errors: 0 };
-    for (const key of ['events', 'sent', 'answers', 'errors']) {
+    if (!isObject(state.stats)) state.stats = { events: 0, sent: 0, answers: 0, errors: 0, ignored: 0 };
+    for (const key of ['events', 'sent', 'answers', 'errors', 'ignored']) {
       if (!Number.isFinite(state.stats[key])) state.stats[key] = 0;
     }
     if (!isObject(state.pairCode)) state.pairCode = null;
@@ -416,6 +433,54 @@ class Store {
 
   setNotifyPreference(mode) {
     this.state.preferences.notifyMode = ['all', 'active', 'off'].includes(mode) ? mode : null;
+    this.touch();
+  }
+
+  leadSession() {
+    if (!this.state.leadSessionId) {
+      return { sessionId: null, title: null, setAt: null, paused: this.state.leadPaused === true };
+    }
+    return {
+      sessionId: this.state.leadSessionId,
+      title: this.state.leadSessionTitle,
+      setAt: this.state.leadSetAt,
+      paused: false,
+    };
+  }
+
+  /**
+   * Bind the one session whose events, commands and replies are allowed to reach
+   * Telegram. Setting a lead always lifts a pause left by a removed lead.
+   */
+  setLeadSession({ sessionId, title = null } = {}) {
+    if (typeof sessionId !== 'string' || !sessionId.trim()) return null;
+    this.state.leadSessionId = sessionId.trim();
+    this.state.leadSessionTitle = typeof title === 'string' && title.trim() ? title.trim() : null;
+    this.state.leadSetAt = this.clock();
+    this.state.leadPaused = false;
+    this.touch();
+    return this.leadSession();
+  }
+
+  /**
+   * Remove the binding without choosing another session. `paused` keeps delivery off
+   * until a person picks a new lead (used when the lead is deleted or archived).
+   */
+  clearLeadSession({ paused = false } = {}) {
+    const previous = this.leadSession();
+    this.state.leadSessionId = null;
+    this.state.leadSessionTitle = null;
+    this.state.leadSetAt = null;
+    this.state.leadPaused = paused === true;
+    this.touch();
+    return previous;
+  }
+
+  setLeadTitle(title) {
+    if (!this.state.leadSessionId) return;
+    const next = typeof title === 'string' && title.trim() ? title.trim() : null;
+    if (next === this.state.leadSessionTitle) return;
+    this.state.leadSessionTitle = next;
     this.touch();
   }
 

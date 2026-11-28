@@ -17,7 +17,7 @@ here patches OpenChamber or OpenCode.
 
 | Contract | What it gives | Where used |
 |---|---|---|
-| `contributes.sessionEvents` | `question-asked`, `permission-asked`, `turn-finished`, `turn-failed`, `turn-started`, `session-created`, `session-deleted`; `content: true` adds the transcript fields | Every card and notification; deletion cleanup |
+| `contributes.sessionEvents` | `question-asked`, `permission-asked`, `turn-finished`, `turn-failed`, `turn-started`, `session-created`, `session-archived`, `session-deleted`; `content: true` adds the transcript fields | Every card and notification; lead removal and deletion cleanup |
 | `question-asked` content | `ask.kind` (`form` or `page`), form `id`, `title`, `fields[]` with `key/type/title/description/required/options/custom/when` | Form cards and answers |
 | `permission-asked` content | `action`, `resources[]`, `message` | Allow/Deny cards |
 | `turn-finished` / `turn-failed` content | `sessionTitle`, `reply` (64k cap), `replyTruncated`, or `error { type, message }` | Full turn notices (rich message or parts), error cards |
@@ -58,7 +58,7 @@ Telegram Bot API  ◄──────────────┐
 │         │ host events                             ▼          │
 │  ┌──────┴───────────────────────────────────────────────┐    │
 │  │ Telegram Desk service (Node, 127.0.0.1)              │    │
-│  │  HTTP: /health /status /sessions /pair /test         │    │
+│  │  HTTP: /health /status /sessions /lead /pair /test   │    │
 │  │  /session-events                                     │    │
 │  │  poller ── outbox ── command router ── form engine   │    │
 │  │  state.json in OPENCHAMBER_SERVICE_DATA_DIR          │    │
@@ -83,6 +83,10 @@ The panel never sees the bot token. It calls the service through the host's
   "offset": 123456,                 // Telegram getUpdates offset
   "pairedIds": [123456789],         // IDs learned through the pairing code
   "primaryChatId": 123456789,       // where event cards are sent
+  "leadSessionId": "ses_…",         // the only session allowed to reach Telegram; null = mode-wide
+  "leadSessionTitle": "…",          // title at bind time / last event
+  "leadSetAt": 0,                   // when the panel bound it
+  "leadPaused": false,              // true after the lead was deleted or archived; clears on bind
   "pairCode": { "code": "ABCD2345", "createdAt": 0, "expiresAt": 0 },
   "pairAttempts": { "chatId": [0] },
   "messages": {                     // bot message -> session routing
@@ -118,7 +122,7 @@ The panel never sees the bot token. It calls the service through the host's
     { "id": "…", "eventId": "evt_…", "chatId": 0, "text": "…", "keyboard": [], "sessionId": "ses_…", "attempts": 0, "nextAt": 0 }
   ],
   "recentEvents": [ { "id": "…", "type": "turn-finished", "sessionId": "ses_…", "at": 0, "delivery": "sent" } ],
-  "stats": { "events": 0, "sent": 0, "answers": 0, "errors": 0 }
+  "stats": { "events": 0, "sent": 0, "answers": 0, "errors": 0, "ignored": 0 }
 }
 ```
 
@@ -143,8 +147,38 @@ the underlying request is still open. Refs are removed with their form/permissio
   that session (the host answers “Session not found”) instead of being sent elsewhere.
   Last `/sessions` indexes keep their positions with a `null` hole, so an old
   `/send <number>` cannot silently address a different session.
+- A `session-archived` for the lead is handled like a deletion for delivery purposes: the
+  registry/watch entry and queued cards are dropped, its open cards close with an archived
+  note, the binding is cleared with `leadPaused: true`, and the primary chat is asked to
+  choose a new lead. A `session-deleted` for the lead does the same after the normal
+  cleanup. Neither event ever selects another session automatically.
 
 ## 4. Flows
+
+### 4.0 Lead gating
+
+```
+POST /lead {sessionId} ──► validate (OpenCode list, then host sessions.status)
+                              │
+                              ▼
+                   state.leadSessionId + title + setAt
+                   close other sessions' open cards
+                   drop queued outbox items for other sessions
+```
+
+Every session event is checked before any handler runs:
+
+- no lead, not paused → today's all/active/off policy;
+- lead set and event.session.id === lead → normal handling;
+- lead set and another session → record the event as `ignored`, increment
+  `stats.ignored`, return; no registry, form, permission, ref or outbox entry;
+- no lead and `leadPaused` → every session event is ignored until a new lead is bound.
+
+The callback flow uses the same rule: a callback ref whose `sessionId` is not the lead is
+closed as stale and acknowledged without calling the host. A reply to any bot
+message is sent to the lead, except a reply to another session's question card, which is
+closed as stale. `/status`, `/sessions`, `/send`, `/stop` and `/digest` use the lead;
+`/new` is refused with the lead title and a `/send` hint.
 
 ### 4.1 Question
 
@@ -270,14 +304,14 @@ accepted a send but before the outbox item was removed; the message may repeat.
 | Command | Behaviour |
 |---|---|
 | `/start [code]` | Pair, or explain how to pair |
-| `/status` | Waiting / busy / idle sessions with pending-answer markers |
-| `/sessions` | Recent sessions with IDs and indexes |
-| `/new <task>` | Start a session with `sessions.start` and send the task; the confirmation is mapped to the new session |
-| `/send <session> <text>` | Resolve by index, full ID, unique prefix or unique title; `sessions.send` |
-| `/stop <session>` | Resolve; `sessions.stop` |
+| `/status` | Waiting / busy / idle sessions with pending-answer markers; only the lead when bound |
+| `/sessions` | Recent sessions with IDs and indexes; only the lead when bound |
+| `/new <task>` | Start a session with `sessions.start` and send the task; refused when a lead is bound |
+| `/send <session> <text>` | Resolve by index, full ID, unique prefix or unique title; `sessions.send`; `/send <text>` targets the lead |
+| `/stop [session]` | Resolve; `sessions.stop`; no argument stops the lead |
 | `/digest` | Counts, pending requests, and events since the last digest |
 | `/help` | Command list |
-| Reply to a bot message | Answer an open form field, or send text to the mapped session |
+| Reply to a bot message | Answer an open form field, or send text to the mapped session; with a lead, text goes to the lead |
 
 `/new <task>` calls `sessions.start` with the task and the directory of the most recent
 top-level session: a service gets no context directory from the host, and `session.create`
@@ -286,12 +320,16 @@ session is recorded in the local registry as busy and watched, so `active` notif
 include it. The confirmation message is entered into the message route table, so replying to
 it continues the session.
 
-Notification modes:
+Notification modes (checked only after the lead gate):
 
 - `all` (default) — every top-level turn finish/failure, still under the cooldowns below.
 - `active` — only sessions that asked a question, requested a permission, were messaged
   from Telegram, or had a Telegram reply in the last 24 h.
 - `off` — no turn notifications.
+
+When `leadSessionId` is set, the gate applies first, so none of these modes can leak another
+session. A paused binding (`leadPaused` with no id) ignores all session events until the
+panel binds a new lead.
 
 A session finish is additionally suppressed for 20 s per session and 10 per minute
 globally. The event is still recorded in `/digest`.
@@ -303,14 +341,18 @@ session, so a reply to any part continues it; the last part carries the reply hi
 
 ## 7. Test plan
 
-- Unit: callback data, allowlist/pairing, store persistence, formatting and escaping,
-  rich replies and part splitting, Telegram client (mocked fetch), host client, OpenCode
-  client, form engine, command router (including `/new` start and fallback), event policy.
-- Smoke: real loopback HTTP service + fake Telegram API + fake host callback; post a
+- Unit: callback data, allowlist/pairing, store persistence (including the lead binding and
+  pause), formatting and escaping, rich replies and part splitting, Telegram client (mocked
+  fetch), host client, OpenCode client, form engine, command router (including `/new` start
+  and fallback, and lead-scoped commands/replies), event policy (lead gate, delete/archive).
+- Smoke: real loopback HTTP service + fake Telegram API + fake host callback; bind a lead
+  through `POST /lead` and assert non-lead events/callbacks are ignored, commands and
+  replies target the lead, `/new` is refused, the binding survives a restart, deleting the
+  lead pauses delivery with a notice, and lead state survives another restart; post a
   `question-asked` event, extract the inline button, feed it back as a Telegram update,
-  assert `sessions.answerForm`; restart with the same data dir and assert the mapping and
-  offset survive; run `/new`, assert `sessions.start` and the confirmation route; assert no
-  token appears in logs; assert an unauthorized chat is ignored.
+  assert `sessions.answerForm`; run `/new` without a lead and assert `sessions.start` and
+  the confirmation route; assert the token appears in neither state, status, sessions,
+  Telegram payloads nor logs; assert an unauthorized chat is ignored.
 - Manifest: `parseManifestJson` from `@openchamber/sdk` plus the packaged files the host
   checks at install.
 

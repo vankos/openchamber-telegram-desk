@@ -70,6 +70,26 @@
 
       <section class="card">
         <div class="card-head">
+          <h2>Telegram lead</h2>
+          <span id="lead-state" class="muted small">no lead</span>
+        </div>
+        <p id="lead-current" class="muted small">No lead is set. Events from every session follow the notification mode.</p>
+        <label class="field">
+          <span>Session</span>
+          <select id="lead-session" class="input">
+            <option value="">Loading sessions…</option>
+          </select>
+        </label>
+        <div class="lead-actions">
+          <button id="lead-set-button" class="btn primary" type="button">Use as Telegram lead</button>
+          <button id="lead-clear-button" class="btn" type="button">Clear lead</button>
+        </div>
+        <p class="muted small">With a lead, only that session's questions, permissions and turn notices reach Telegram. Commands and replies target it, and /new is blocked.</p>
+        <p id="lead-result" class="result hidden" aria-live="polite"></p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
           <h2>Turn notifications</h2>
         </div>
         <label class="field">
