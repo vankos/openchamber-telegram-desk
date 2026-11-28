@@ -442,6 +442,82 @@ test('with a lead, events from every other session are ignored and create nothin
   assert.equal(h.store.state.stats.ignored, 4);
 });
 
+test('deleting a non-lead session cleans it up without touching the lead or sending', async () => {
+  const h = await makeHarness({ notifySetting: 'all' });
+  h.store.setLeadSession({ sessionId: 'ses_lead', title: 'Lead session' });
+  h.store.touchSession('ses_lead', { title: 'Lead session', status: 'idle' });
+  h.store.touchSession('ses_2', { title: 'Other session', status: 'busy', directory: '/repo/other' });
+  h.store.watchSession('ses_2');
+  h.store.state.forms['ses_2:frm_2'] = {
+    sessionId: 'ses_2',
+    formId: 'frm_2',
+    title: 'Other question',
+    sessionTitle: 'Other session',
+    chatId: 100,
+    messageId: 601,
+    fields: [],
+    answers: {},
+    salt: 'salt2',
+    closed: false,
+    updatedAt: 1,
+  };
+  h.store.state.permissions.perm_2 = {
+    ref: 'ref_perm_2',
+    sessionId: 'ses_2',
+    requestId: 'perm_2',
+    chatId: 100,
+    messageId: 602,
+    closed: false,
+    at: 1,
+  };
+  h.store.addOutbox({ id: 'ob_2', chatId: 100, text: 'queued for the other session', sessionId: 'ses_2' });
+  h.store.setLastSessionList(100, ['ses_2', 'ses_lead']);
+
+  const result = await h.events.handle(baseEvent('session-deleted', {
+    session: { id: 'ses_2', parentId: null },
+  }));
+  assert.equal(result.ok, true);
+  assert.equal(h.store.state.sessionRegistry.ses_2, undefined);
+  assert.equal(h.store.isWatched('ses_2'), false);
+  assert.equal(h.store.state.forms['ses_2:frm_2'].closed, true);
+  assert.equal(h.store.state.permissions.perm_2.closed, true);
+  assert.equal(h.store.state.outbox.filter((item) => item.sessionId === 'ses_2').length, 0);
+  assert.deepEqual(h.store.lastSessionList(100), [null, 'ses_lead']);
+  assert.ok(h.edits.some((edit) => edit.messageId === 601 && /deleted in OpenChamber/.test(edit.text)));
+  assert.ok(h.edits.some((edit) => edit.messageId === 602 && /deleted in OpenChamber/.test(edit.text)));
+  assert.equal(h.store.state.stats.ignored, 1);
+  assert.deepEqual(h.store.leadSession(), {
+    sessionId: 'ses_lead',
+    title: 'Lead session',
+    setAt: h.store.state.leadSetAt,
+    paused: false,
+  });
+  assert.equal(h.sent.length, 0);
+  await h.outbox.drain();
+  assert.equal(h.sent.length, 0);
+  assert.equal(h.store.state.outbox.length, 0);
+});
+
+test('a paused binding still cleans a deleted session without sending', async () => {
+  const h = await makeHarness({ notifySetting: 'all' });
+  h.store.clearLeadSession({ paused: true });
+  h.store.touchSession('ses_gone', { title: 'Deleted session', status: 'busy', directory: '/repo/gone' });
+  h.store.watchSession('ses_gone');
+  h.store.addOutbox({ id: 'ob_gone', chatId: 100, text: 'queued for a deleted session', sessionId: 'ses_gone' });
+
+  const result = await h.events.handle(baseEvent('session-deleted', {
+    session: { id: 'ses_gone', parentId: null },
+  }));
+  assert.equal(result.ok, true);
+  assert.equal(h.store.state.sessionRegistry.ses_gone, undefined);
+  assert.equal(h.store.isWatched('ses_gone'), false);
+  assert.equal(h.store.state.outbox.filter((item) => item.sessionId === 'ses_gone').length, 0);
+  assert.equal(h.store.state.stats.ignored, 1);
+  assert.deepEqual(h.store.leadSession(), { sessionId: null, title: null, setAt: null, paused: true });
+  await h.outbox.drain();
+  assert.equal(h.sent.length, 0);
+});
+
 test('deleting the lead clears the binding, pauses delivery and asks for a new lead', async () => {
   const h = await makeHarness({ notifySetting: 'all' });
   h.store.setLeadSession({ sessionId: 'ses_1', title: 'Fix parser' });

@@ -36,9 +36,10 @@ requested.
 - **Reply routing.** Reply to any bot message and the text goes to the session it belongs
   to. Replying to an open question card answers its text field instead.
 - **Session cleanup.** A session deleted in OpenChamber disappears from `/sessions`
-  immediately. Its open question and permission cards close with a note, queued cards are
-  dropped, and an old reply still resolves to that session so the host's “Session not
-  found” answer is shown instead of sending the text elsewhere.
+  immediately, including non-lead sessions while a lead is set or delivery is paused. Its
+  open question and permission cards close with a note, queued cards are dropped, and an
+  old reply still resolves to that session so the host's “Session not found” answer is
+  shown instead of sending the text elsewhere.
 - **Commands.** `/new`, `/status`, `/sessions`, `/send`, `/stop`, `/digest`, `/help`.
 - **Pairing and allowlist.** A short-lived code from the panel pairs a private chat. A
   numeric allowlist in the integration settings is the second way in.
@@ -227,7 +228,7 @@ to delete its data folder.
 ```bash
 npm install
 npm run build     # rebuilds panel/main.js from panel/src/main.mjs
-npm test          # node:test unit + smoke tests (118 tests)
+npm test          # node:test unit + smoke tests (121 tests)
 npm run check     # manifest, packaged files, IIFE panel
 ```
 

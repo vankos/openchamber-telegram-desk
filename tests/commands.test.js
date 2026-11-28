@@ -427,6 +427,44 @@ test('with a lead, replies go to the lead and other form cards are stale', async
   ]);
 });
 
+test('a deleted non-lead session stays gone after the lead is cleared', async () => {
+  const h = await makeHarness();
+  h.store.setPrimaryChat(100);
+  h.store.addPairedId(100);
+  h.store.touchSession('ses_gone', { title: 'Deleted session', status: 'busy', directory: '/repo/gone' });
+  h.store.watchSession('ses_gone');
+  h.store.setLeadSession({ sessionId: 'ses_2', title: 'Build release' });
+
+  await h.sessionEvents.handle({
+    v: 1,
+    requestId: 'req_deleted_under_lead',
+    event: {
+      id: 'evt_deleted_under_lead',
+      type: 'session-deleted',
+      at: 1,
+      session: { id: 'ses_gone', parentId: null },
+      project: { directory: '/repo/gone' },
+      linked: [],
+    },
+  });
+  assert.equal(h.store.state.sessionRegistry.ses_gone, undefined);
+  assert.equal(h.store.isWatched('ses_gone'), false);
+  assert.equal(h.store.state.stats.ignored, 1);
+  assert.equal(h.store.leadSession().sessionId, 'ses_2');
+
+  h.store.clearLeadSession();
+  const sessions = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/sessions', isPrivate: true, chatType: 'private',
+  });
+  assert.doesNotMatch(sessions.text, /ses_gone/);
+  assert.match(sessions.text, /ses_1/);
+  assert.match(sessions.text, /ses_2/);
+  const status = await h.commands.handleMessage({
+    chatId: 100, userId: 100, text: '/status', isPrivate: true, chatType: 'private',
+  });
+  assert.doesNotMatch(status.text, /ses_gone/);
+});
+
 test('a paused lead rejects work commands until a new lead is chosen', async () => {
   const h = await makeHarness();
   h.store.setPrimaryChat(100);

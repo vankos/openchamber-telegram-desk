@@ -141,7 +141,9 @@ the underlying request is still open. Refs are removed with their form/permissio
 - `recentEvents` keeps the last 40 metadata records for the panel and `/digest`.
 - `outbox` is capped at 100 items; old items are dropped with a recorded failure.
 - `session-deleted` removes the session from `sessionRegistry` and `watchedSessions` and
-  drops its queued outbox items, so `/sessions` stops listing it at once. Open forms and
+  drops its queued outbox items, so `/sessions` stops listing it at once. This cleanup runs
+  for every deleted session, including non-lead sessions while a lead is bound and any
+  deletion while the binding is paused. Open forms and
   permissions for that session are closed with a note, but their state, refs and message
   routes stay: an old button press is a stale no-op, and an old reply still resolves to
   that session (the host answers “Session not found”) instead of being sent elsewhere.
@@ -171,8 +173,11 @@ Every session event is checked before any handler runs:
 - no lead, not paused → today's all/active/off policy;
 - lead set and event.session.id === lead → normal handling;
 - lead set and another session → record the event as `ignored`, increment
-  `stats.ignored`, return; no registry, form, permission, ref or outbox entry;
-- no lead and `leadPaused` → every session event is ignored until a new lead is bound.
+  `stats.ignored`, return; no registry, form, permission, ref or outbox entry. The one
+  exception is `session-deleted`: its registry/watch/outbox/card cleanup always runs, while
+  delivery stays ignored and the lead binding is untouched;
+- no lead and `leadPaused` → every session event is ignored until a new lead is bound;
+  `session-deleted` still runs its cleanup.
 
 The callback flow uses the same rule: a callback ref whose `sessionId` is not the lead is
 closed as stale and acknowledged without calling the host. A reply to any bot

@@ -359,9 +359,12 @@ const createSessionEvents = ({
     markDelivery(request, 'queued');
   };
 
-  const handleSessionDeleted = async (request) => {
-    const sessionId = request.event.session.id;
-    const wasLead = store.state.leadSessionId === sessionId;
+  /**
+   * Registry, watch, outbox and open cards of a session that no longer exists. This
+   * runs for every `session-deleted`, including non-lead sessions under a lead and
+   * every deletion while delivery is paused; only the notification is gated.
+   */
+  const cleanupDeletedSession = async (sessionId) => {
     // Remove it from /sessions at once. Queued cards are dropped first: they belong to a
     // session that no longer exists and must not arrive after the deletion.
     store.forgetSession(sessionId);
@@ -370,6 +373,12 @@ const createSessionEvents = ({
     // Open cards stay in state (their refs and message routes are untouched) but close
     // with a note, so an old button press is a clear no-op instead of a failed answer.
     await closeSessionCards(sessionId);
+  };
+
+  const handleSessionDeleted = async (request) => {
+    const sessionId = request.event.session.id;
+    const wasLead = store.state.leadSessionId === sessionId;
+    await cleanupDeletedSession(sessionId);
     if (wasLead) {
       await removeLead(request, 'deleted');
       return;
@@ -425,9 +434,15 @@ const createSessionEvents = ({
     // With a lead, everything from another session is ignored before any handler can
     // create a form, permission, ref, outbox item or registry entry. A paused binding
     // (the lead was deleted or archived) ignores every event until a new lead is chosen.
+    // The one exception is session-deleted: a deleted session must leave the registry
+    // and stop receiving cards even when it is not the lead, so cleanup runs first and
+    // only delivery/notification stays gated.
     const leadSessionId = store.state.leadSessionId;
     const paused = !leadSessionId && store.state.leadPaused === true;
     if (paused || (leadSessionId && request.event.session.id !== leadSessionId)) {
+      if (request.event.type === 'session-deleted') {
+        await cleanupDeletedSession(request.event.session.id);
+      }
       const detail = paused ? 'lead removed, delivery paused' : 'not the Telegram lead';
       markDelivery(request, 'ignored', detail);
       store.bump('ignored');
