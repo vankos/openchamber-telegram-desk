@@ -84,6 +84,7 @@ const api = async (port, method, route, body = undefined) => {
 
 const createHarness = async (dir, {
   listSessions = async () => [],
+  findArchivedSession = async () => null,
   sessionStatus = async () => ({ status: 'idle' }),
   awaitValidation = true,
 } = {}) => {
@@ -93,6 +94,7 @@ const createHarness = async (dir, {
   const edits = [];
   const statusCalls = [];
   const listCalls = [];
+  const findCalls = [];
   const telegram = {
     token: TOKEN,
     setToken() {},
@@ -128,6 +130,10 @@ const createHarness = async (dir, {
       listCalls.push(true);
       return listSessions();
     },
+    async findArchivedSession(sessionId) {
+      findCalls.push(sessionId);
+      return findArchivedSession(sessionId);
+    },
     async listActiveSessionIds() {
       return new Set();
     },
@@ -151,7 +157,7 @@ const createHarness = async (dir, {
     await settle();
     await service.outbox.drain();
   }
-  return { service, port, sent, edits, logs, statusCalls, listCalls, telegram, host };
+  return { service, port, sent, edits, logs, statusCalls, listCalls, findCalls, telegram, host };
 };
 
 test('startup clears a lead that OpenCode and the host confirm is missing', async () => {
@@ -207,11 +213,13 @@ test('startup keeps a lead present in the OpenCode list without a notice', async
   }
 });
 
-test('startup keeps an archived lead that the host still resolves', async () => {
+test('startup keeps a host-resolved session that OpenCode does not confirm archived', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'telegram-desk-lead-validation-'));
   await seedState(dir);
   const h = await createHarness(dir, {
-    // Archived sessions drop out of OpenCode's list; the host is the fallback.
+    // Archived sessions drop out of the active list and a missing raw record is not
+    // proof of archiving, so the host fallback still keeps the binding.
+    findArchivedSession: async () => null,
     listSessions: async () => [],
     sessionStatus: async () => ({ status: 'idle' }),
   });
@@ -219,8 +227,70 @@ test('startup keeps an archived lead that the host still resolves', async () => 
     const status = h.service.getStatus();
     assert.equal(status.lead.sessionId, 'ses_old');
     assert.equal(status.lead.paused, false);
+    assert.deepEqual(h.findCalls, ['ses_old']);
     assert.deepEqual(h.statusCalls, ['ses_old']);
     assert.equal(h.sent.length, 0);
+  } finally {
+    await h.service.stop();
+  }
+});
+
+test('startup clears a lead confirmed archived while the service was offline', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'telegram-desk-lead-validation-'));
+  await seedState(dir);
+  const h = await createHarness(dir, {
+    findArchivedSession: async (sessionId) => ({
+      id: sessionId,
+      title: 'Old lead',
+      parentId: null,
+      directory: '/repo/old',
+      updatedAt: 900,
+      archived: true,
+    }),
+    listSessions: async () => [{
+      id: 'ses_other', title: 'Other session', parentId: null, directory: '/repo/other', updatedAt: 800,
+    }],
+    sessionStatus: async () => ({ status: 'idle' }),
+  });
+  try {
+    const status = h.service.getStatus();
+    assert.equal(status.lead.sessionId, null);
+    assert.equal(status.lead.paused, true);
+    assert.equal(h.service.store.state.sessionRegistry.ses_old, undefined);
+    assert.equal(h.service.store.state.outbox.length, 0);
+
+    assert.equal(h.sent.length, 1);
+    assert.equal(h.sent[0].chatId, CHAT_ID);
+    assert.match(h.sent[0].text, /Telegram lead removed/);
+    assert.match(h.sent[0].text, /Old lead/);
+    assert.match(h.sent[0].text, /archived while the service was offline/);
+    assert.match(h.sent[0].text, /Choose a new lead/);
+    assert.equal(h.service.store.state.leadSessionId, null);
+
+    // The positive archived record settles it; the host is not consulted.
+    assert.deepEqual(h.findCalls, ['ses_old']);
+    assert.deepEqual(h.listCalls, []);
+    assert.deepEqual(h.statusCalls, []);
+  } finally {
+    await h.service.stop();
+  }
+});
+
+test('startup keeps the lead when the archived state cannot be read', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'telegram-desk-lead-validation-'));
+  await seedState(dir);
+  const h = await createHarness(dir, {
+    findArchivedSession: async () => { throw unavailable('OpenCode did not answer', 'OPENCODE_UNAVAILABLE'); },
+    listSessions: async () => [],
+    sessionStatus: async () => ({ status: 'idle' }),
+  });
+  try {
+    const status = h.service.getStatus();
+    assert.equal(status.lead.sessionId, 'ses_old');
+    assert.equal(status.lead.paused, false);
+    assert.deepEqual(h.findCalls, ['ses_old']);
+    assert.equal(h.sent.length, 0);
+    assert.equal(h.service.store.state.stats.errors, 0);
   } finally {
     await h.service.stop();
   }

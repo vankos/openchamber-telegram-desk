@@ -14,6 +14,20 @@ const probeLeadPresence = async ({ sessionId, opencode, host } = {}) => {
     return { outcome: 'unknown', reason: 'no session id' };
   }
 
+  // The targeted archived read is the only proof of archiving. A non-archived
+  // session is not returned by it, and a missing record or failed read only means
+  // the archive state is unknown; absence must not be read as "archived".
+  let archiveState = 'unknown';
+  if (opencode?.available && typeof opencode.findArchivedSession === 'function') {
+    try {
+      const found = await opencode.findArchivedSession(sessionId);
+      if (found) return { outcome: 'archived', source: 'opencode' };
+      archiveState = 'absent';
+    } catch {
+      archiveState = 'unknown';
+    }
+  }
+
   let listState = 'unknown';
   if (opencode?.available && typeof opencode.listSessions === 'function') {
     try {
@@ -44,7 +58,7 @@ const probeLeadPresence = async ({ sessionId, opencode, host } = {}) => {
   if (listState === 'absent' && hostState === 'absent') {
     return { outcome: 'missing', source: 'opencode+host' };
   }
-  return { outcome: 'unknown', reason: `list ${listState}, host ${hostState}` };
+  return { outcome: 'unknown', reason: `archive ${archiveState}, list ${listState}, host ${hostState}` };
 };
 
 module.exports = {

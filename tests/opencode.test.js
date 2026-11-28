@@ -48,6 +48,33 @@ test('lists sessions newest first, drops archived items and sends the bearer', a
   assert.equal(calls[0].options.headers.Authorization, 'Bearer service-secret');
 });
 
+test('findArchivedSession returns an archived record while listSessions hides it', async () => {
+  const calls = [];
+  const client = createOpenCodeClient({
+    baseUrl: 'http://127.0.0.1:4096',
+    token: 'service-secret',
+    fetchImpl: async (url) => {
+      calls.push(String(url));
+      return json([
+        { id: 'ses_new', title: 'New', time: { updated: 30 } },
+        { id: 'ses_archived', title: 'Gone', time: { updated: 40, archived: 50 } },
+      ]);
+    },
+  });
+  assert.deepEqual(await client.findArchivedSession('ses_archived'), {
+    id: 'ses_archived',
+    title: 'Gone',
+    parentId: null,
+    directory: null,
+    updatedAt: 40,
+    archived: true,
+  });
+  assert.equal(await client.findArchivedSession('ses_new'), null);
+  assert.equal(await client.findArchivedSession('ses_missing'), null);
+  assert.match(calls[0], /\/api\/session\?archived=true&limit=100$/);
+  assert.deepEqual((await client.listSessions()).map((session) => session.id), ['ses_new']);
+});
+
 test('accepts a wrapped { data } session list', async () => {
   const client = createOpenCodeClient({
     baseUrl: 'http://127.0.0.1:4096',

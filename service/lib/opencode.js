@@ -78,16 +78,33 @@ const createOpenCodeClient = ({
     return body;
   };
 
+  const readAllSessions = async () => {
+    const body = await request('/api/session');
+    return extractSessionArray(body)
+      .map(normalizeSession)
+      .filter(Boolean)
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  };
+
   return {
     available,
+    // Public list: active sessions only, newest first, capped as before.
     async listSessions() {
-      const body = await request('/api/session');
+      return (await readAllSessions())
+        .filter((session) => !session.archived)
+        .slice(0, 100);
+    },
+    // Internal read for startup validation: ask the API for archived sessions
+    // explicitly, so a known id can be confirmed archived even though the public
+    // active list hides it. A missing record is not proof of anything.
+    async findArchivedSession(sessionId) {
+      if (typeof sessionId !== 'string' || !sessionId) return null;
+      const body = await request('/api/session?archived=true&limit=100');
       const sessions = extractSessionArray(body)
         .map(normalizeSession)
-        .filter(Boolean)
-        .filter((session) => !session.archived)
-        .sort((a, b) => b.updatedAt - a.updatedAt);
-      return sessions.slice(0, 100);
+        .filter(Boolean);
+      const found = sessions.find((session) => session.id === sessionId);
+      return found?.archived === true ? found : null;
     },
     async listActiveSessionIds() {
       const body = await request('/api/session/active');

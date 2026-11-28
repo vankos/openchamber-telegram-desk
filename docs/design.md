@@ -154,13 +154,16 @@ the underlying request is still open. Refs are removed with their form/permissio
   note, the binding is cleared with `leadPaused: true`, and the primary chat is asked to
   choose a new lead. A `session-deleted` for the lead does the same after the normal
   cleanup. Neither event ever selects another session automatically.
-- A deletion while the service was down has no event to replay. After loading state the
-  service probes the persisted lead once: the binding stays when the OpenCode list contains
-  it or `sessions.status` resolves. Only a complete, non-empty OpenCode list (under its
-  100-session cap) without the lead plus a host 404 clears the binding, sets
-  `leadPaused: true` and sends a “disappeared while the service was offline” notice. Empty,
-  capped or failed lists, an unavailable OpenCode or host, and other errors are `unknown` and
-  keep the binding; a panel bind or a live deletion event that lands during the probe wins.
+- A deletion or archival while the service was down has no event to replay. After loading
+  state the service probes the persisted lead once. A positive archived record from OpenCode's
+  `archived=true` session read (`time.archived` or `archivedAt`) is treated like an archival:
+  the binding is cleared with `leadPaused: true` and the primary chat gets an archived-while-
+  offline notice, even if `sessions.status` still resolves the session. If the archived record
+  is absent or unreadable, archive state stays unknown and that absence alone never clears the
+  lead. The binding also stays when the active list contains it or `sessions.status` resolves.
+  A deletion needs a complete, non-empty active list (under its 100-session cap) without the
+  lead plus a host 404; empty, capped or failed lists and an unavailable OpenCode or host keep
+  the binding. A panel bind or a live deletion/archive event that lands during the probe wins.
   A cleared binding stays paused across restarts, so the notice is sent once.
 
 ## 4. Flows
@@ -179,19 +182,24 @@ POST /lead {sessionId} ──► validate (OpenCode list, then host sessions.sta
 On startup, once state is loaded and the host/OpenCode clients exist:
 
 ```
-state.leadSessionId ──► probe (OpenCode list + host sessions.status)
-                          │                    │                         │
-                          │ present            │ missing (same binding)  │ unknown
-                          ▼                    ▼                         ▼
-                     keep binding      clear + leadPaused:true      keep binding
-                                       + one offline notice
+state.leadSessionId ──► probe (raw archive record + active list + host status)
+        │                         │                              │                    │
+        │ present                 │ archived record              │ missing            │ unknown
+        │ (list or host)          │                              │ (list + host 404)  │
+        ▼                         ▼                              ▼                    ▼
+   keep binding        clear + leadPaused:true         clear + leadPaused:true   keep binding
+                       + archived/offline notice       + deleted/offline notice
 ```
 
+`findArchivedSession` asks `/api/session?archived=true&limit=100` and returns the exact id
+only when its record is archived; a missing record never clears anything. The public
+`listSessions` still hides archived sessions and keeps its cap.
 The probe captures the id and `setAt`; before clearing it re-checks both, so a panel bind,
-clear or live `session-deleted` that lands while the probe is in flight is not clobbered.
-`unknown` includes an unavailable OpenCode or host, a failed request, an empty list and a
-list at its cap. The probe runs once per startup, so a transient outage cannot clear the
-binding later and a paused state sends no second notice on the next restart.
+clear or live `session-deleted`/`session-archived` that lands while the probe is in flight is
+not clobbered. `unknown` includes an unavailable OpenCode or host, a failed request, an empty
+list, a list at its cap, and a raw archive read that cannot confirm the id. The probe runs
+once per startup, so a transient outage cannot clear the binding later and a paused state
+sends no second notice on the next restart.
 
 Every session event is checked before any handler runs:
 
@@ -376,10 +384,13 @@ session, so a reply to any part continues it; the last part carries the reply hi
   fetch), host client, OpenCode client, form engine, command router (including `/new` start
   and fallback, and lead-scoped commands/replies), event policy (lead gate, delete/archive).
 - Startup lead validation: a lead confirmed missing by a complete list plus a host 404 is
-  cleared, paused and noticed once with no auto-selection; a present (listed or host-resolved)
-  lead is kept silently; transient failures, an empty list and a host 404 are unknown and keep
-  the binding; a bind during the in-flight probe survives; a restart while paused sends no
-  second notice; no primary chat skips the notice without failing.
+  cleared, paused and noticed once with no auto-selection; a lead confirmed archived by the
+  raw OpenCode record is cleared and noticed with archived/offline wording even when the host
+  resolves it; a host-resolved session not confirmed archived is kept silently; transient
+  failures, an empty list, a host 404 and an unreadable archive record keep the binding; a
+  bind during the in-flight probe survives; a restart while paused sends no second notice;
+  no primary chat skips the notice without failing.
+- OpenCode client: `findArchivedSession` returns an archived record that `listSessions` hides.
 - Smoke: real loopback HTTP service + fake Telegram API + fake host callback; bind a lead
   through `POST /lead` and assert non-lead events/callbacks are ignored, commands and
   replies target the lead, `/new` is refused, the binding survives a restart, deleting the

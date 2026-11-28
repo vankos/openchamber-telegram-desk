@@ -55,8 +55,9 @@ Expected: the bot username printed, one message delivered, no token in the outpu
    startup notice and stays active.
 10. Pause the extension (or stop OpenChamber), delete or archive the current lead while the
     service is not running, then resume/start it. Expected: after startup the panel shows
-    delivery paused, and exactly one notice says the session was deleted or archived while
-    the service was offline and to choose a new lead. Nothing is selected automatically.
+    delivery paused, and exactly one notice arrives — “deleted or archived while the service
+    was offline” for a deletion, “archived while the service was offline” for an archived
+    session — telling you to choose a new lead. Nothing is selected automatically.
 11. Restart again; expected: the paused state stays and no second notice arrives.
 
 ## 2. Question
@@ -184,8 +185,10 @@ If the agent opens an answerable page:
 - Deleting or archiving the lead pauses delivery and asks for a new lead; nothing is
   auto-selected.
 - A lead that disappeared while the service was down is cleared on startup with one offline
-  notice; a lead that still exists, or a probe that cannot reach OpenCode or the host, keeps
-  the binding and sends nothing. Restarting a paused state sends no duplicate notice.
+  notice; a lead confirmed archived by OpenCode's archived-session read is cleared with
+  archived wording even if the host still resolves it; a valid lead, a host-resolved session
+  not confirmed archived, or a probe that cannot read the archive/list/host keeps the binding
+  and sends nothing. Restarting a paused state sends no duplicate notice.
 - An unauthorized chat is ignored.
 - The token appears in neither logs nor the panel.
 - After a restart, mappings, offset, the lead binding and an old open card still work.

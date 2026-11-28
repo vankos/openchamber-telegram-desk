@@ -438,30 +438,34 @@ const createDeskService = ({
   };
 
   /**
-   * A restart cannot replay a `session-deleted` that happened while the service was
-   * down. Check the persisted lead once, after state load and only when both sources
-   * can prove absence; a transient failure or an incomplete list keeps the binding.
-   * The binding is captured up front and re-checked before clearing, so a panel bind
-   * or a live deletion event wins over an in-flight probe.
+   * A restart cannot replay a `session-deleted` or `session-archived` that happened
+   * while the service was down. Check the persisted lead once, after state load. A
+   * confirmed archived lead is gone for delivery even if the host still resolves it;
+   * otherwise only both sources proving absence clears the binding. A transient
+   * failure or an incomplete list keeps it. The binding is captured up front and
+   * re-checked before clearing, so a panel bind or a live event wins over the probe.
    */
   const validateLeadBinding = async () => {
     const sessionId = store.state.leadSessionId;
     if (!sessionId) return { outcome: 'no-lead' };
     const setAt = store.state.leadSetAt;
     const presence = await probeLeadPresence({ sessionId, opencode, host });
-    if (presence.outcome !== 'missing') return presence;
+    if (presence.outcome !== 'missing' && presence.outcome !== 'archived') return presence;
     if (store.state.leadSessionId !== sessionId || store.state.leadSetAt !== setAt) {
       return { ...presence, outcome: 'changed' };
     }
+    const archived = presence.outcome === 'archived';
     const result = await sessionEvents.removeLeadSession({
       sessionId,
       title: store.state.leadSessionTitle,
-      reason: 'missing',
+      reason: archived ? 'archived' : 'missing',
       offline: true,
     });
     await store.flush();
     if (result.removed) {
-      log.info('Cleared a Telegram lead that disappeared while the service was offline');
+      log.info('Cleared a Telegram lead that was removed while the service was offline', {
+        archived,
+      });
     }
     return { ...presence, ...result };
   };
