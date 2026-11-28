@@ -329,35 +329,60 @@ const createSessionEvents = ({
   /**
    * The bound lead is gone. Drop its queued cards, close its open cards, clear the
    * binding and tell the primary chat to choose a new lead. Delivery stays paused
-   * until someone picks another session; nothing is auto-selected.
+   * until someone picks another session; nothing is auto-selected. The binding is
+   * re-checked after the awaited card edits: a panel bind or clear that lands while
+   * this runs must win.
    */
-  const removeLead = async (request, reason) => {
-    const sessionId = request.event.session.id;
+  const removeLead = async ({
+    sessionId,
+    title = null,
+    reason = 'deleted',
+    eventId = null,
+    offline = false,
+    onDelivery = null,
+  }) => {
     const previous = store.leadSession();
+    if (previous.sessionId !== sessionId) return { removed: false, changed: true };
     store.forgetSession(sessionId);
     store.state.outbox = store.state.outbox.filter((item) => item.sessionId !== sessionId);
     store.touch();
     await closeSessionCards(sessionId, reason === 'archived' ? SESSION_ARCHIVED_NOTE : SESSION_DELETED_NOTE);
+    if (store.state.leadSessionId !== sessionId || store.state.leadSetAt !== previous.setAt) {
+      return { removed: false, changed: true };
+    }
     store.clearLeadSession({ paused: true });
     const chatId = primary();
     if (!chatId) {
-      markDelivery(request, 'failed', 'no primary chat');
-      return;
+      onDelivery?.('failed', 'no primary chat');
+      return { removed: true, queued: false };
     }
     const card = formatLeadRemoved({
-      title: previous.title,
+      title: title ?? previous.title,
       sessionId,
       reason,
+      offline,
     });
     outbox.enqueue({
-      eventId: request.event.id,
+      eventId,
       chatId,
       text: card.text,
       plain: card.plain,
       kind: 'event',
     });
-    markDelivery(request, 'queued');
+    onDelivery?.('queued');
+    return { removed: true, queued: true };
   };
+
+  const removeLeadForEvent = (request, reason) => removeLead({
+    sessionId: request.event.session.id,
+    title: store.leadSession().title,
+    reason,
+    eventId: request.event.id,
+    onDelivery: (delivery, detail) => markDelivery(request, delivery, detail),
+  });
+
+  // Used by startup validation, where no session event exists to mark as delivered.
+  const removeLeadSession = (options = {}) => removeLead(options);
 
   /**
    * Registry, watch, outbox and open cards of a session that no longer exists. This
@@ -377,12 +402,11 @@ const createSessionEvents = ({
 
   const handleSessionDeleted = async (request) => {
     const sessionId = request.event.session.id;
-    const wasLead = store.state.leadSessionId === sessionId;
-    await cleanupDeletedSession(sessionId);
-    if (wasLead) {
-      await removeLead(request, 'deleted');
+    if (store.state.leadSessionId === sessionId) {
+      await removeLeadForEvent(request, 'deleted');
       return;
     }
+    await cleanupDeletedSession(sessionId);
     markDelivery(request, 'ignored', 'session removed');
   };
 
@@ -392,7 +416,7 @@ const createSessionEvents = ({
       markDelivery(request, 'ignored');
       return;
     }
-    await removeLead(request, 'archived');
+    await removeLeadForEvent(request, 'archived');
   };
 
   /**
@@ -579,6 +603,7 @@ const createSessionEvents = ({
     handle,
     pendingCounts,
     enforceLead,
+    removeLeadSession,
     closeForm,
     closeFormsForSession,
     findPermissionByRef,

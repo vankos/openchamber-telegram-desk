@@ -11,6 +11,7 @@ const { createOpenCodeClient } = require('./lib/opencode');
 const { createTelegramClient } = require('./lib/telegram');
 const { createOutbox } = require('./lib/outbox');
 const { createSessionEvents, validateSessionEvent } = require('./lib/session-events');
+const { probeLeadPresence } = require('./lib/lead-validation');
 const { createAnswerEngine } = require('./lib/answers');
 const { createCommands } = require('./lib/commands');
 const { normalizeSettings } = require('./lib/settings');
@@ -120,6 +121,7 @@ const createDeskService = ({
   let sessionEvents = null;
   let answerEngine = null;
   let commands = null;
+  let leadValidation = null;
 
   outbox = createOutbox({
     store,
@@ -433,6 +435,35 @@ const createDeskService = ({
     await sessionEvents.enforceLead({ closeCards: true });
     await store.flush();
     return { status: 200, body: { ok: true, lead: getStatus().lead } };
+  };
+
+  /**
+   * A restart cannot replay a `session-deleted` that happened while the service was
+   * down. Check the persisted lead once, after state load and only when both sources
+   * can prove absence; a transient failure or an incomplete list keeps the binding.
+   * The binding is captured up front and re-checked before clearing, so a panel bind
+   * or a live deletion event wins over an in-flight probe.
+   */
+  const validateLeadBinding = async () => {
+    const sessionId = store.state.leadSessionId;
+    if (!sessionId) return { outcome: 'no-lead' };
+    const setAt = store.state.leadSetAt;
+    const presence = await probeLeadPresence({ sessionId, opencode, host });
+    if (presence.outcome !== 'missing') return presence;
+    if (store.state.leadSessionId !== sessionId || store.state.leadSetAt !== setAt) {
+      return { ...presence, outcome: 'changed' };
+    }
+    const result = await sessionEvents.removeLeadSession({
+      sessionId,
+      title: store.state.leadSessionTitle,
+      reason: 'missing',
+      offline: true,
+    });
+    await store.flush();
+    if (result.removed) {
+      log.info('Cleared a Telegram lead that disappeared while the service was offline');
+    }
+    return { ...presence, ...result };
   };
 
   const handleHttp = async (req, res) => {
@@ -796,6 +827,14 @@ const createDeskService = ({
       timers.push(settingsTimer, outboxTimer, pruneTimer);
       void pollLoop();
     }
+    // After state load and the host/OpenCode clients exist. Exactly once: an unknown
+    // result is not retried, so a transient outage cannot later clear a live lead.
+    leadValidation = Promise.resolve()
+      .then(() => validateLeadBinding())
+      .catch((error) => {
+        log.warn('Could not validate the Telegram lead', { code: error?.code });
+        return { outcome: 'unknown' };
+      });
     return { port: actualPort };
   };
 
@@ -820,6 +859,10 @@ const createDeskService = ({
     handleTelegramUpdate,
     processUpdate,
     refreshSettings,
+    validateLeadBinding,
+    get leadValidation() {
+      return leadValidation;
+    },
     get port() {
       return actualPort;
     },

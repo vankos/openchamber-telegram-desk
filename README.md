@@ -22,6 +22,8 @@ requested.
   session is counted as ignored and sends nothing. Commands and replies target the lead,
   `/new` is blocked, and the binding survives restarts. If the lead is deleted or archived,
   delivery pauses and the primary chat asks for a new lead; nothing is selected automatically.
+  On startup the service also re-checks a persisted lead against OpenCode and the host, so a
+  deletion missed while the service was down clears the binding instead of leaving it stale.
   With no lead, the notification mode applies to every session, as before.
 - **Question cards.** A `question-asked` form becomes a message with option buttons. Single
   choice questions answer on the first press; multi-field forms collect answers and show a
@@ -138,6 +140,15 @@ Deleting or archiving the lead drops its queued cards, clears the binding, pause
 and sends the primary chat a notice to choose a new lead. The pause and the binding both
 survive restarts; **Clear lead** in the panel returns to the mode-wide behaviour.
 
+A restart cannot replay a deletion that happened while the service was down. After loading
+state, the service probes the persisted lead once: a session present in the OpenCode list or
+resolved by the host keeps the binding. Only when a complete, non-empty OpenCode list lacks
+the lead and the host answers 404 is the binding cleared, delivery paused and the primary
+chat told that the session disappeared while the service was offline. Empty, capped or
+failed lists, an unavailable OpenCode or host, and other errors keep the binding untouched.
+The binding is re-checked before clearing, so a lead chosen in the panel while the probe was
+running wins.
+
 ## How a question is answered
 
 A `question-asked` event carries a form. The bot stores the form, creates one opaque callback
@@ -204,9 +215,11 @@ to delete its data folder.
 - **OpenCode session list is optional.** It needs the separately approved `opencode` grant.
   Without it, `/status`, `/sessions` and the lead picker only know sessions observed in
   events since the service started.
-- **The lead is one session, not one project.** A subagent session cannot be chosen. If the
-  service is down when the lead is deleted, the deletion event is not replayed; the stale
-  binding reports the last known state until a person binds another lead or clears it.
+- **The lead is one session, not one project.** A subagent session cannot be chosen. A
+  deletion that happens while the service is down is detected on the next startup only when
+  the OpenCode list is complete (non-empty and under its 100-session cap) and the host answers
+  404. If either source is unavailable, the stale binding stays until a person binds another
+  lead or clears it.
 - **`/new` needs OpenChamber 2.8 or newer** and a model selected for new sessions. It starts
   in the directory of the most recent top-level session; open a project or a session in
   OpenChamber first.
@@ -228,7 +241,7 @@ to delete its data folder.
 ```bash
 npm install
 npm run build     # rebuilds panel/main.js from panel/src/main.mjs
-npm test          # node:test unit + smoke tests (121 tests)
+npm test          # node:test unit + smoke tests (129 tests)
 npm run check     # manifest, packaged files, IIFE panel
 ```
 

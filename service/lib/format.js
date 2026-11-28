@@ -412,11 +412,14 @@ const formatStopResult = ({ title, stopped }) => {
   return { text: html, plain: htmlToPlain(html) };
 };
 
-const formatLeadRemoved = ({ title, sessionId, reason = 'deleted' }) => {
-  const what = reason === 'archived' ? 'archived' : 'deleted';
+const formatLeadRemoved = ({ title, sessionId, reason = 'deleted', offline = false }) => {
+  const what = reason === 'archived' ? 'archived'
+    : reason === 'missing' ? 'deleted or archived'
+      : 'deleted';
+  const when = offline ? ' while the service was offline' : ' in OpenChamber';
   const html = clipHtmlSafe([
     '🛑 <b>Telegram lead removed</b>',
-    `The lead session ${bold(sessionTitle(title || sessionId))} was ${what} in OpenChamber.`,
+    `The lead session ${bold(sessionTitle(title || sessionId))} was ${what}${when}.`,
     '<i>Choose a new lead in the Telegram Desk panel. Until then, events from other sessions are not sent to Telegram.</i>',
   ].join('\n'));
   return { text: html, plain: htmlToPlain(html) };

@@ -51,8 +51,13 @@ Expected: the bot username printed, one message delivered, no token in the outpu
    “Telegram lead removed … Choose a new lead” arrives, and further events from other
    sessions stay silent. The panel shows the lead as paused.
 8. Choose another session; expected: delivery resumes for it only.
-9. Restart OpenChamber; expected: the lead survives the restart (or stays paused after a
-   removal) until changed in the panel.
+9. Restart OpenChamber; expected: a lead that still exists survives the restart with no
+   startup notice and stays active.
+10. Pause the extension (or stop OpenChamber), delete or archive the current lead while the
+    service is not running, then resume/start it. Expected: after startup the panel shows
+    delivery paused, and exactly one notice says the session was deleted or archived while
+    the service was offline and to choose a new lead. Nothing is selected automatically.
+11. Restart again; expected: the paused state stays and no second notice arrives.
 
 ## 2. Question
 
@@ -178,6 +183,9 @@ If the agent opens an answerable page:
 - With a lead, only that session's events arrive; other sessions are ignored silently.
 - Deleting or archiving the lead pauses delivery and asks for a new lead; nothing is
   auto-selected.
+- A lead that disappeared while the service was down is cleared on startup with one offline
+  notice; a lead that still exists, or a probe that cannot reach OpenCode or the host, keeps
+  the binding and sends nothing. Restarting a paused state sends no duplicate notice.
 - An unauthorized chat is ignored.
 - The token appears in neither logs nor the panel.
 - After a restart, mappings, offset, the lead binding and an old open card still work.

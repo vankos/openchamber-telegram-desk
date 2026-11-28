@@ -154,6 +154,14 @@ the underlying request is still open. Refs are removed with their form/permissio
   note, the binding is cleared with `leadPaused: true`, and the primary chat is asked to
   choose a new lead. A `session-deleted` for the lead does the same after the normal
   cleanup. Neither event ever selects another session automatically.
+- A deletion while the service was down has no event to replay. After loading state the
+  service probes the persisted lead once: the binding stays when the OpenCode list contains
+  it or `sessions.status` resolves. Only a complete, non-empty OpenCode list (under its
+  100-session cap) without the lead plus a host 404 clears the binding, sets
+  `leadPaused: true` and sends a “disappeared while the service was offline” notice. Empty,
+  capped or failed lists, an unavailable OpenCode or host, and other errors are `unknown` and
+  keep the binding; a panel bind or a live deletion event that lands during the probe wins.
+  A cleared binding stays paused across restarts, so the notice is sent once.
 
 ## 4. Flows
 
@@ -167,6 +175,23 @@ POST /lead {sessionId} ──► validate (OpenCode list, then host sessions.sta
                    close other sessions' open cards
                    drop queued outbox items for other sessions
 ```
+
+On startup, once state is loaded and the host/OpenCode clients exist:
+
+```
+state.leadSessionId ──► probe (OpenCode list + host sessions.status)
+                          │                    │                         │
+                          │ present            │ missing (same binding)  │ unknown
+                          ▼                    ▼                         ▼
+                     keep binding      clear + leadPaused:true      keep binding
+                                       + one offline notice
+```
+
+The probe captures the id and `setAt`; before clearing it re-checks both, so a panel bind,
+clear or live `session-deleted` that lands while the probe is in flight is not clobbered.
+`unknown` includes an unavailable OpenCode or host, a failed request, an empty list and a
+list at its cap. The probe runs once per startup, so a transient outage cannot clear the
+binding later and a paused state sends no second notice on the next restart.
 
 Every session event is checked before any handler runs:
 
@@ -350,6 +375,11 @@ session, so a reply to any part continues it; the last part carries the reply hi
   pause), formatting and escaping, rich replies and part splitting, Telegram client (mocked
   fetch), host client, OpenCode client, form engine, command router (including `/new` start
   and fallback, and lead-scoped commands/replies), event policy (lead gate, delete/archive).
+- Startup lead validation: a lead confirmed missing by a complete list plus a host 404 is
+  cleared, paused and noticed once with no auto-selection; a present (listed or host-resolved)
+  lead is kept silently; transient failures, an empty list and a host 404 are unknown and keep
+  the binding; a bind during the in-flight probe survives; a restart while paused sends no
+  second notice; no primary chat skips the notice without failing.
 - Smoke: real loopback HTTP service + fake Telegram API + fake host callback; bind a lead
   through `POST /lead` and assert non-lead events/callbacks are ignored, commands and
   replies target the lead, `/new` is refused, the binding survives a restart, deleting the
